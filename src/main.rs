@@ -7,12 +7,14 @@
 //! - [`font`]     — embedded TTF font rasterization (Hack Nerd Font)
 //! - [`atlas`]    — glyph atlas packing and metrics
 //! - [`todos`]    — ToDo model and persistence
+//! - [`settings`] — app settings (font size) and persistence
 //! - [`shaders`]  — SPIR-V shader modules
 
 mod app;
 mod atlas;
 mod font;
 mod renderer;
+mod settings;
 mod shaders;
 mod todos;
 mod ui;

@@ -502,7 +502,15 @@ impl App {
 
         let mut ui = Ui::new(self.mouse);
         ui.clicks = std::mem::take(&mut self.pending_clicks);
-        draw_ui(&mut self.todos, &self.save_path, &mut ui, w, h);
+        draw_ui(
+            &mut self.todos,
+            &mut self.settings,
+            &self.save_path,
+            &self.settings_path,
+            &mut ui,
+            w,
+            h,
+        );
         if ui.verts.len() > MAX_VERTICES {
             ui.verts.truncate(MAX_VERTICES);
         }
@@ -632,7 +640,9 @@ impl App {
         let mut ui = Ui::new([-1000.0; 2]);
         draw_ui(
             &mut self.todos,
+            &mut self.settings,
             &self.save_path,
+            &self.settings_path,
             &mut ui,
             width as f32,
             height as f32,

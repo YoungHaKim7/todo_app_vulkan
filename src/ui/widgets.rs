@@ -5,10 +5,12 @@ use std::time::Instant;
 use super::{Rect, Ui, line_height, text_width};
 use crate::font::Size;
 use crate::ui::theme::{
-    BtnStyle, COL_BORDER, COL_CHECK, COL_DANGER_HOVER, COL_FIELD, COL_TEXT_DIM,
+    BtnStyle, COL_BORDER, COL_CHECK, COL_DANGER_HOVER, COL_FIELD, COL_PANEL, COL_PANEL_HOVER,
+    COL_TEXT, COL_TEXT_DIM,
 };
 
 pub(crate) fn button(ui: &mut Ui, r: Rect, label: &str, style: &BtnStyle, enabled: bool) -> bool {
+    let size = Size::text(ui.font_level);
     let hot = enabled && ui.hovered(r);
     if hot {
         ui.pointer = true;
@@ -22,13 +24,13 @@ pub(crate) fn button(ui: &mut Ui, r: Rect, label: &str, style: &BtnStyle, enable
         style.base
     };
     ui.rect(r, bg);
-    let tw = text_width(label, Size::Text);
+    let tw = text_width(label, size);
     let tc = if enabled { style.text } else { COL_TEXT_DIM };
     ui.text_at(
         r.x + (r.w - tw) * 0.5,
-        r.y + (r.h - line_height(Size::Text)) * 0.5,
+        r.y + (r.h - line_height(size)) * 0.5,
         label,
-        Size::Text,
+        size,
         tc,
     );
     clicked
@@ -73,4 +75,25 @@ pub(crate) fn delete_button(ui: &mut Ui, r: Rect) -> bool {
 
 pub(crate) fn caret_blinking(since: Instant) -> bool {
     (since.elapsed().as_millis() / 450).is_multiple_of(2)
+}
+
+/// Settings affordance at the top left: the Nerd Font gear glyph (U+F013) on a ghost
+/// button, drawn at the title size so it matches the header.
+pub(crate) fn gear_button(ui: &mut Ui, r: Rect) -> bool {
+    let hot = ui.hovered(r);
+    if hot {
+        ui.pointer = true;
+    }
+    let clicked = ui.take_click(r);
+    ui.rect(r, if hot { COL_PANEL_HOVER } else { COL_PANEL });
+    let size = Size::title(ui.font_level);
+    let icon = "\u{f013}";
+    ui.text_at(
+        r.x + (r.w - text_width(icon, size)) * 0.5,
+        r.y + (r.h - line_height(size)) * 0.5,
+        icon,
+        size,
+        if hot { COL_TEXT } else { COL_TEXT_DIM },
+    );
+    clicked
 }

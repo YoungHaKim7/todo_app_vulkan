@@ -5,7 +5,7 @@ use std::{fs, path::Path, time::Instant};
 pub(crate) fn sanitize(c: char) -> Option<char> {
     if c == '\t' {
         Some(' ')
-    } else if c.is_ascii_graphic() || c == ' ' || c == '·' {
+    } else if c.is_ascii_graphic() || c == ' ' || c == '·' || c == '−' {
         Some(c)
     } else {
         None
@@ -95,6 +95,7 @@ mod tests {
         assert_eq!(sanitize('\t'), Some(' '));
         assert_eq!(sanitize('\n'), None);
         assert_eq!(sanitize('·'), Some('·'));
+        assert_eq!(sanitize('−'), Some('−'));
         assert_eq!(sanitize('\u{e9}'), None);
     }
 

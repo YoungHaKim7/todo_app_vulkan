@@ -9,7 +9,10 @@ pub(crate) mod widgets;
 
 use vulkano::{buffer::BufferContents, pipeline::graphics::vertex_input::Vertex};
 
-use crate::{atlas, font::Size};
+use crate::{
+    atlas,
+    font::{DEFAULT_LEVEL, Size},
+};
 
 #[derive(BufferContents, Clone, Copy, Vertex)]
 #[repr(C)]
@@ -51,6 +54,8 @@ pub(crate) struct Ui {
     mouse: [f32; 2],
     pub(crate) clicks: Vec<[f32; 2]>,
     pub(crate) pointer: bool,
+    /// Font-size step used by widgets that draw their own text.
+    pub(crate) font_level: usize,
 }
 
 impl Ui {
@@ -60,6 +65,7 @@ impl Ui {
             mouse,
             clicks: Vec::new(),
             pointer: false,
+            font_level: DEFAULT_LEVEL,
         }
     }
 

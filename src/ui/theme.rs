@@ -14,6 +14,8 @@ pub(crate) const COL_TEXT_DIM: [f32; 4] = [0.44, 0.46, 0.55, 1.0];
 pub(crate) const COL_PLACEHOLDER: [f32; 4] = [0.38, 0.40, 0.48, 1.0];
 pub(crate) const COL_CHECK: [f32; 4] = [0.30, 0.78, 0.49, 1.0];
 pub(crate) const COL_DANGER_HOVER: [f32; 4] = [0.98, 0.45, 0.43, 1.0];
+/// Dimmer drawn behind a modal window.
+pub(crate) const COL_OVERLAY: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
 
 pub(crate) struct BtnStyle {
     pub(crate) base: [f32; 4],

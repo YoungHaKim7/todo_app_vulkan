@@ -11,16 +11,21 @@ use winit::{
 };
 
 use crate::{
+    font,
     renderer::{GpuContext, RenderContext},
+    settings::Settings,
     todos::{Todos, sanitize},
 };
 
 const SAVE_FILE: &str = "todos.txt";
+const SETTINGS_FILE: &str = "settings.txt";
 
 pub(crate) struct App {
     pub(crate) gpu: GpuContext,
     pub(crate) todos: Todos,
     pub(crate) save_path: PathBuf,
+    pub(crate) settings: Settings,
+    pub(crate) settings_path: PathBuf,
     pub(crate) mouse: [f32; 2],
     pub(crate) pending_clicks: Vec<[f32; 2]>,
     pub(crate) cursor_is_pointer: bool,
@@ -32,14 +37,14 @@ impl App {
     pub(crate) fn new(event_loop: &EventLoop<()>) -> Self {
         println!("Vulkan ToDo");
         println!(
-            "Controls: type + Enter = add task · click checkbox = toggle · X = delete · scroll = move list · Esc = quit"
+            "Controls: type + Enter = add task · click checkbox = toggle · X = delete · scroll = move list · settings: gear (top left) · Esc: close window / quit"
         );
 
         let gpu = GpuContext::new(event_loop);
 
-        let save_path = std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(SAVE_FILE);
+        let save_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let save_path = save_dir.join(SAVE_FILE);
+        let settings_path = save_dir.join(SETTINGS_FILE);
 
         let todos = Todos::load(&save_path);
         println!(
@@ -47,11 +52,14 @@ impl App {
             todos.items.len(),
             save_path.display()
         );
+        let settings = Settings::load(&settings_path);
 
         Self {
             gpu,
             todos,
             save_path,
+            settings,
+            settings_path,
             mouse: [-1000.0; 2],
             pending_clicks: Vec::new(),
             cursor_is_pointer: false,
@@ -64,7 +72,7 @@ impl App {
         if event.state != ElementState::Pressed {
             return;
         }
-        if !self.todos.focused {
+        if self.settings.open || !self.todos.focused {
             return;
         }
         match event.logical_key {
@@ -125,13 +133,19 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
                 };
-                self.todos.scroll =
-                    (self.todos.scroll - lines * 40.0).clamp(0.0, self.todos.max_scroll);
+                if !self.settings.open {
+                    self.todos.scroll =
+                        (self.todos.scroll - lines * 40.0).clamp(0.0, self.todos.max_scroll);
+                }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let Key::Named(NamedKey::Escape) = event.logical_key {
                     if event.state == ElementState::Pressed {
-                        event_loop.exit();
+                        if self.settings.open {
+                            self.settings.open = false;
+                        } else {
+                            event_loop.exit();
+                        }
                     }
                 } else {
                     self.handle_keyboard(event);
@@ -152,6 +166,17 @@ impl ApplicationHandler for App {
             && let Some(path) = std::env::var_os("TODO_DUMP_FRAME")
         {
             self.dump_done = true;
+            // Debug overrides for the frame dump: force a font level and/or the settings
+            // window open so both states can be rendered headlessly.
+            if let Some(level) = std::env::var("TODO_FONT_LEVEL")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+            {
+                self.settings.font_level = level.min(font::LEVELS - 1);
+            }
+            if std::env::var_os("TODO_SETTINGS_OPEN").is_some() {
+                self.settings.open = true;
+            }
             self.dump_frame(&path.to_string_lossy());
             event_loop.exit();
             return;

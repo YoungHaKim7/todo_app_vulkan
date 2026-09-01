@@ -49,12 +49,13 @@ pub(crate) struct FontAtlas {
     pub(crate) height: u32,
     /// 8-bit alpha coverage, row-major, `width * height` bytes.
     pub(crate) pixels: Vec<u8>,
-    sizes: [SizeEntry; 2],
+    /// One entry per rasterized [`Size`], in [`Size::index`] order.
+    sizes: Vec<SizeEntry>,
 }
 
 impl FontAtlas {
     pub(crate) fn size(&self, size: Size) -> &SizeEntry {
-        &self.sizes[size as usize]
+        &self.sizes[size.index()]
     }
 
     pub(crate) fn quad(&self, size: Size, c: char) -> Option<&Quad> {
@@ -168,10 +169,7 @@ fn build() -> FontAtlas {
                 })
                 .collect(),
         })
-        .collect::<Vec<_>>()
-        .try_into()
-        .map_err(|v: Vec<SizeEntry>| v.len())
-        .unwrap();
+        .collect::<Vec<_>>();
 
     FontAtlas {
         width,
@@ -194,28 +192,30 @@ mod tests {
         // The white cell is opaque.
         assert_eq!(atlas.pixels[0], 255);
 
-        for size in [Size::Text, Size::Title] {
-            let entry = atlas.size(size);
-            assert!(entry.ascent > 0.0);
-            assert!(entry.line_height > entry.ascent);
+        for level in 0..font::LEVELS {
+            for size in [Size::text(level), Size::title(level)] {
+                let entry = atlas.size(size);
+                assert!(entry.ascent > 0.0);
+                assert!(entry.line_height > entry.ascent);
 
-            // Space advances but never draws; 'M' and the middle dot have bitmaps.
-            assert!(atlas.quad(size, ' ').is_none());
-            assert!(atlas.advance(size, ' ') > 0.0);
-            for c in ['M', 'g', '·'] {
-                let quad = atlas
-                    .quad(size, c)
-                    .unwrap_or_else(|| panic!("missing quad for {c:?} at {size:?}"));
-                assert!(quad.w > 0.0 && quad.h > 0.0);
-                assert!(
-                    (quad.u + quad.w) <= atlas.width as f32
-                        && (quad.v + quad.h) <= atlas.height as f32,
-                    "quad for {c:?} overflows the atlas"
-                );
+                // Space advances but never draws; 'M' and the extra glyphs have bitmaps.
+                assert!(atlas.quad(size, ' ').is_none());
+                assert!(atlas.advance(size, ' ') > 0.0);
+                for c in ['M', 'g', '·', '−', '\u{f013}'] {
+                    let quad = atlas
+                        .quad(size, c)
+                        .unwrap_or_else(|| panic!("missing quad for {c:?} at {size:?}"));
+                    assert!(quad.w > 0.0 && quad.h > 0.0);
+                    assert!(
+                        (quad.u + quad.w) <= atlas.width as f32
+                            && (quad.v + quad.h) <= atlas.height as f32,
+                        "quad for {c:?} overflows the atlas"
+                    );
+                }
+
+                // Unknown characters still advance (fallback: the space's advance).
+                assert_eq!(atlas.advance(size, 'é'), atlas.advance(size, ' '));
             }
-
-            // Unknown characters still advance (fallback: the space's advance).
-            assert_eq!(atlas.advance(size, 'é'), atlas.advance(size, ' '));
         }
     }
 }
