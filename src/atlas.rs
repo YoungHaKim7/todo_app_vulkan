@@ -10,7 +10,10 @@
 //! The dynamic part grows downward in the same pixel buffer and bumps a generation
 //! counter whenever its content changes, so the renderer knows to re-upload.
 
-use std::{collections::HashMap, sync::{Mutex, OnceLock}};
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+};
 
 use crate::font::{self, GlyphSlot, Size};
 
@@ -197,8 +200,7 @@ impl Dynamic {
                 return None;
             }
             self.height = (self.height + DYN_GROW).min(TEXTURE_H_MAX);
-            self.pixels
-                .resize((TEXTURE_W * self.height) as usize, 0);
+            self.pixels.resize((TEXTURE_W * self.height) as usize, 0);
         }
         let pos = (self.cursor_x + CELL_PAD, self.shelf_y + CELL_PAD);
         self.cursor_x += cell_w;

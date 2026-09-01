@@ -2,10 +2,7 @@
 
 use std::{fs, path::Path, time::Instant};
 
-use crate::{
-    input::TextField,
-    ui::Rect,
-};
+use crate::{input::TextField, ui::Rect};
 
 pub(crate) fn sanitize(c: char) -> Option<char> {
     if c == '\t' {

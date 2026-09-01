@@ -51,7 +51,10 @@ mod tests {
     /// Per-test temp path: tests run in parallel and share a process id, so the name
     /// must differ per test or one test's cleanup deletes another's fixture.
     fn temp_path(tag: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("vulkan_todo_settings_{tag}_{}.txt", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "vulkan_todo_settings_{tag}_{}.txt",
+            std::process::id()
+        ))
     }
 
     #[test]

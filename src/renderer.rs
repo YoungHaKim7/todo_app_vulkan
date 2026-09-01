@@ -8,8 +8,7 @@ use vulkano::{
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
         AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferToImageInfo, CopyImageToBufferInfo,
-        RenderingAttachmentInfo, RenderingInfo,
-        allocator::StandardCommandBufferAllocator,
+        RenderingAttachmentInfo, RenderingInfo, allocator::StandardCommandBufferAllocator,
     },
     descriptor_set::{
         DescriptorImageInfo, DescriptorSet, WriteDescriptorSet,
@@ -417,8 +416,7 @@ impl RenderContext {
             )
             .unwrap();
 
-            let descriptor_set =
-                make_descriptor_set(gpu, &pipeline, &atlas_view);
+            let descriptor_set = make_descriptor_set(gpu, &pipeline, &atlas_view);
 
             (pipeline, descriptor_set)
         };

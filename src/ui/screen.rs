@@ -98,7 +98,11 @@ pub(crate) fn draw_ui(
     // the mouse, extending the selection. Mouse x maps against the scrolled-out
     // text, so shift it by the current scroll offset first.
     if !modal_was_open && ui.mouse_down && field.contains(ui.press) {
-        let x = if todos.field_drag { ui.mouse[0] } else { ui.press[0] };
+        let x = if todos.field_drag {
+            ui.mouse[0]
+        } else {
+            ui.press[0]
+        };
         todos.input.caret = todos.input.caret_from_x(x + todos.input.scroll_x, tx, text);
         if !todos.field_drag {
             todos.field_drag = true;
@@ -191,7 +195,14 @@ pub(crate) fn draw_ui(
 
         // Text, starting at the first char that is not fully scrolled out.
         let (vis, lead) = todos.input.visible_start(scroll_x, text);
-        ui.text_clipped(tx - lead, ty, &todos.input.text[vis..], text, COL_TEXT, max_tx);
+        ui.text_clipped(
+            tx - lead,
+            ty,
+            &todos.input.text[vis..],
+            text,
+            COL_TEXT,
+            max_tx,
+        );
 
         // The IME composition (e.g. Hangul jamo merging into a syllable) renders at
         // the caret, underlined, until the IME commits it.

@@ -45,7 +45,8 @@ impl TextField {
 
     /// The selected byte range, front-to-back; `None` when caret and anchor meet.
     pub(crate) fn selection(&self) -> Option<std::ops::Range<usize>> {
-        (self.caret != self.anchor).then(|| self.caret.min(self.anchor)..self.caret.max(self.anchor))
+        (self.caret != self.anchor)
+            .then(|| self.caret.min(self.anchor)..self.caret.max(self.anchor))
     }
 
     pub(crate) fn selected_text(&self) -> Option<&str> {
@@ -411,11 +412,17 @@ mod tests {
     fn word_moves_jump_words_not_spaces() {
         let mut f = field("one two", 7, 7);
         f.move_left(true, false);
-        assert_eq!(f.caret, 4, "Ctrl+Left lands before 'two', not before its spaces");
+        assert_eq!(
+            f.caret, 4,
+            "Ctrl+Left lands before 'two', not before its spaces"
+        );
         f.move_left(true, false);
         assert_eq!(f.caret, 0);
         f.move_right(true, false);
-        assert_eq!(f.caret, 3, "Ctrl+Right lands after 'one', not after its spaces");
+        assert_eq!(
+            f.caret, 3,
+            "Ctrl+Right lands after 'one', not after its spaces"
+        );
         f.move_right(true, false);
         assert_eq!(f.caret, 7);
     }

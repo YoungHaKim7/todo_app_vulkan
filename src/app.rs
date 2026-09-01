@@ -105,7 +105,13 @@ impl App {
         match event.logical_key {
             Key::Named(NamedKey::Enter) => self.todos.add_task(&self.save_path),
             Key::Named(NamedKey::Backspace) => {
-                self.edit(|f| if ctrl { f.backspace_word() } else { f.backspace() });
+                self.edit(|f| {
+                    if ctrl {
+                        f.backspace_word()
+                    } else {
+                        f.backspace()
+                    }
+                });
             }
             Key::Named(NamedKey::Delete) => {
                 self.edit(|f| if ctrl { f.delete_word() } else { f.delete() });
