@@ -2,6 +2,11 @@
 
 use std::{fs, path::Path, time::Instant};
 
+use crate::{
+    input::TextField,
+    ui::Rect,
+};
+
 pub(crate) fn sanitize(c: char) -> Option<char> {
     if c == '\t' {
         Some(' ')
@@ -33,11 +38,19 @@ fn encode_save_line(todo: &Todo) -> String {
 
 pub(crate) struct Todos {
     pub(crate) items: Vec<Todo>,
-    pub(crate) input: String,
+    pub(crate) input: TextField,
     pub(crate) focused: bool,
     pub(crate) caret_since: Instant,
     pub(crate) scroll: f32,
     pub(crate) max_scroll: f32,
+    /// The input field's rect from the last drawn frame, so raw mouse presses can be
+    /// hit-tested against it between frames.
+    pub(crate) field_rect: Rect,
+    /// A mouse press started in the input field and is still held (drag selection).
+    pub(crate) field_drag: bool,
+    /// When and where the input field was last clicked, for double/triple-click
+    /// word/all selection.
+    pub(crate) last_field_click: Option<(Instant, [f32; 2], u32)>,
 }
 
 impl Todos {
@@ -47,11 +60,19 @@ impl Todos {
             .unwrap_or_default();
         Self {
             items,
-            input: String::new(),
+            input: TextField::new(),
             focused: false,
             caret_since: Instant::now(),
             scroll: 0.0,
             max_scroll: 0.0,
+            field_rect: Rect {
+                x: -1.0,
+                y: -1.0,
+                w: 0.0,
+                h: 0.0,
+            },
+            field_drag: false,
+            last_field_click: None,
         }
     }
 
@@ -65,7 +86,7 @@ impl Todos {
     }
 
     pub(crate) fn add_task(&mut self, path: &Path) {
-        let text = self.input.trim().to_string();
+        let text = self.input.text.trim().to_string();
         if text.is_empty() {
             return;
         }
@@ -114,11 +135,19 @@ mod tests {
                     done: true,
                 },
             ],
-            input: String::new(),
+            input: TextField::new(),
             focused: false,
             caret_since: Instant::now(),
             scroll: 0.0,
             max_scroll: 0.0,
+            field_rect: Rect {
+                x: -1.0,
+                y: -1.0,
+                w: 0.0,
+                h: 0.0,
+            },
+            field_drag: false,
+            last_field_click: None,
         };
         todos.save(&path);
         let loaded = Todos::load(&path);

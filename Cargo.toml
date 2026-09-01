@@ -5,6 +5,8 @@ edition = "2024"
 
 [dependencies]
 ab_glyph = "0.2"
+copypasta = "0.10"
+raw-window-handle = "0.6"
 vulkano = { git = "https://github.com/vulkano-rs/vulkano", rev="fb4cfdb" }
 vulkano-shaders = { git = "https://github.com/vulkano-rs/vulkano", rev="fb4cfdb"}
 winit = "0.30.13"

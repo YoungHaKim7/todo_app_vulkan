@@ -2,16 +2,18 @@
 
 use std::{path::PathBuf, time::Instant};
 
+use copypasta::{ClipboardContext, ClipboardProvider, nop_clipboard::NopClipboardContext};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
-    keyboard::{Key, NamedKey},
-    window::WindowId,
+    keyboard::{Key, ModifiersState, NamedKey},
+    window::{Window, WindowId},
 };
 
 use crate::{
     font,
+    input::TextField,
     renderer::{GpuContext, RenderContext},
     settings::Settings,
     todos::{Todos, sanitize},
@@ -28,6 +30,12 @@ pub(crate) struct App {
     pub(crate) settings_path: PathBuf,
     pub(crate) mouse: [f32; 2],
     pub(crate) pending_clicks: Vec<[f32; 2]>,
+    /// Whether the left button is held, and where that press started; the UI uses
+    /// this to drive drag selection in the input field.
+    pub(crate) mouse_down: bool,
+    pub(crate) press: [f32; 2],
+    pub(crate) mods: ModifiersState,
+    pub(crate) clipboard: Box<dyn ClipboardProvider>,
     pub(crate) cursor_is_pointer: bool,
     pub(crate) dump_done: bool,
     pub(crate) rcx: Option<RenderContext>,
@@ -37,7 +45,7 @@ impl App {
     pub(crate) fn new(event_loop: &EventLoop<()>) -> Self {
         println!("Vulkan ToDo");
         println!(
-            "Controls: type + Enter = add task · click checkbox = toggle · X = delete · scroll = move list · settings: gear (top left) · Esc: close window / quit"
+            "Controls: type + Enter = add task · click/drag in the input = caret/selection · Ctrl+A/C/X/V · Ctrl+Backspace = delete word · click checkbox = toggle · X = delete · scroll = move list · settings: gear (top left) · Esc: close window / quit"
         );
 
         let gpu = GpuContext::new(event_loop);
@@ -62,6 +70,11 @@ impl App {
             settings_path,
             mouse: [-1000.0; 2],
             pending_clicks: Vec::new(),
+            mouse_down: false,
+            press: [-1000.0; 2],
+            mods: ModifiersState::empty(),
+            // Replaced with the real backend once a window exists (see `resumed`).
+            clipboard: Box::new(NopClipboardContext::new().unwrap()),
             cursor_is_pointer: false,
             dump_done: false,
             rcx: None,
@@ -75,34 +88,109 @@ impl App {
         if self.settings.open || !self.todos.focused {
             return;
         }
+        let ctrl = self.mods.control_key();
+        let shift = self.mods.shift_key();
         match event.logical_key {
             Key::Named(NamedKey::Enter) => self.todos.add_task(&self.save_path),
             Key::Named(NamedKey::Backspace) => {
-                if self.todos.input.pop().is_some() {
-                    self.todos.caret_since = Instant::now();
-                }
+                self.edit(|f| if ctrl { f.backspace_word() } else { f.backspace() });
             }
-            Key::Named(NamedKey::Space) => self.type_char(' '),
-            Key::Character(text) => {
-                for c in text.as_str().chars().filter_map(sanitize) {
-                    self.type_char(c);
-                }
+            Key::Named(NamedKey::Delete) => {
+                self.edit(|f| if ctrl { f.delete_word() } else { f.delete() });
             }
+            Key::Named(NamedKey::ArrowLeft) => self.edit(|f| f.move_left(ctrl, shift)),
+            Key::Named(NamedKey::ArrowRight) => self.edit(|f| f.move_right(ctrl, shift)),
+            Key::Named(NamedKey::Home) => self.edit(|f| f.move_to_start(shift)),
+            Key::Named(NamedKey::End) => self.edit(|f| f.move_to_end(shift)),
+            Key::Named(NamedKey::Space) => self.type_str(" "),
+            // Ctrl chords act on the selection or clipboard; anything else with Ctrl
+            // held types nothing rather than inserting a control character.
+            Key::Character(text) if ctrl => match text.to_lowercase().as_str() {
+                "a" => self.edit(TextField::select_all),
+                "c" => self.copy_selection(),
+                "x" => self.cut_selection(),
+                "v" => self.paste_clipboard(),
+                _ => {}
+            },
+            Key::Character(text) if !self.mods.alt_key() => self.type_str(&text),
             _ => {}
         }
     }
 
-    fn type_char(&mut self, c: char) {
-        if self.todos.input.chars().count() < 80 {
-            self.todos.input.push(c);
-            self.todos.caret_since = Instant::now();
+    /// Applies an editing operation to the input field and restarts the caret blink.
+    fn edit(&mut self, op: impl FnOnce(&mut TextField)) {
+        op(&mut self.todos.input);
+        self.todos.caret_since = Instant::now();
+    }
+
+    /// Types literal text into the field at the caret, replacing any selection.
+    fn type_str(&mut self, s: &str) {
+        let typed: String = s.chars().filter_map(sanitize).collect();
+        if !typed.is_empty() {
+            self.edit(|f| f.insert_str(&typed));
+        }
+    }
+
+    fn copy_selection(&mut self) {
+        if let Some(text) = self.todos.input.selected_text() {
+            let text = text.to_string();
+            self.clipboard.set_contents(text).ok();
+        }
+    }
+
+    fn cut_selection(&mut self) {
+        if let Some(text) = self.todos.input.selected_text() {
+            let text = text.to_string();
+            if self.clipboard.set_contents(text).is_ok() {
+                self.edit(|f| f.backspace());
+            }
+        }
+    }
+
+    fn paste_clipboard(&mut self) {
+        let Ok(text) = self.clipboard.get_contents() else {
+            return;
+        };
+        // Line breaks and tabs become spaces so pasted text stays one line;
+        // everything else goes through the same filter as typing.
+        let pasted: String = text
+            .chars()
+            .filter_map(|c| match c {
+                '\n' | '\r' | '\t' => Some(' '),
+                _ => sanitize(c),
+            })
+            .collect();
+        if !pasted.is_empty() {
+            self.edit(|f| f.insert_str(&pasted));
         }
     }
 }
 
+/// Builds the clipboard for the session at hand: Wayland when the window runs on a
+/// Wayland display, X11 otherwise, and a no-op stub if neither connects.
+fn make_clipboard(window: &Window) -> Box<dyn ClipboardProvider> {
+    use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    if let Ok(handle) = window.display_handle()
+        && let RawDisplayHandle::Wayland(display) = handle.as_raw()
+    {
+        // SAFETY: the pointer is the live Wayland display backing `window`, which
+        // outlives the clipboard built from it.
+        let clipboard = unsafe {
+            copypasta::wayland_clipboard::create_clipboards_from_external(display.display.as_ptr())
+        }
+        .1;
+        return Box::new(clipboard);
+    }
+    ClipboardContext::new()
+        .map(|ctx| Box::new(ctx) as Box<dyn ClipboardProvider>)
+        .unwrap_or_else(|_| Box::new(NopClipboardContext::new().unwrap()))
+}
+
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        self.rcx = Some(RenderContext::new(&self.gpu, event_loop));
+        let rcx = RenderContext::new(&self.gpu, event_loop);
+        self.clipboard = make_clipboard(&rcx.window);
+        self.rcx = Some(rcx);
     }
 
     fn window_event(
@@ -123,11 +211,24 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse = [position.x as f32, position.y as f32];
             }
-            WindowEvent::MouseInput { state, button, .. } => {
-                if button == MouseButton::Left && state == ElementState::Released {
-                    self.pending_clicks.push(self.mouse);
+            WindowEvent::MouseInput { state, button, .. } if button == MouseButton::Left => {
+                match state {
+                    ElementState::Pressed => {
+                        self.mouse_down = true;
+                        self.press = self.mouse;
+                        // Focusing on press (not just release) means the caret and
+                        // drag selection are visible while the button is held.
+                        if !self.settings.open && self.todos.field_rect.contains(self.mouse) {
+                            self.todos.focused = true;
+                        }
+                    }
+                    ElementState::Released => {
+                        self.mouse_down = false;
+                        self.pending_clicks.push(self.mouse);
+                    }
                 }
             }
+            WindowEvent::ModifiersChanged(mods) => self.mods = mods.state(),
             WindowEvent::MouseWheel { delta, .. } => {
                 let lines = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
@@ -176,6 +277,16 @@ impl ApplicationHandler for App {
             }
             if std::env::var_os("TODO_SETTINGS_OPEN").is_some() {
                 self.settings.open = true;
+            }
+            // Seed the input field (focused) so editing visuals can be rendered
+            // headlessly; TODO_INPUT_SELECT additionally selects everything.
+            if let Ok(text) = std::env::var("TODO_INPUT") {
+                self.todos.input.clear();
+                self.todos.input.insert_str(&text);
+                self.todos.focused = true;
+                if std::env::var_os("TODO_INPUT_SELECT").is_some() {
+                    self.todos.input.select_all();
+                }
             }
             self.dump_frame(&path.to_string_lossy());
             event_loop.exit();

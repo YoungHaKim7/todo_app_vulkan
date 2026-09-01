@@ -502,6 +502,8 @@ impl App {
 
         let mut ui = Ui::new(self.mouse);
         ui.clicks = std::mem::take(&mut self.pending_clicks);
+        ui.mouse_down = self.mouse_down;
+        ui.press = self.press;
         draw_ui(
             &mut self.todos,
             &mut self.settings,

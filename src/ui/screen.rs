@@ -3,7 +3,7 @@
 use std::{path::Path, time::Instant};
 
 use super::{
-    Rect, Ui, fit_width, line_height, text_width,
+    Rect, Ui, line_height, text_width,
     widgets::{button, caret_blinking, checkbox, delete_button, gear_button},
 };
 use crate::font::{self, Size};
@@ -13,7 +13,7 @@ use crate::{
     todos::Todos,
     ui::theme::{
         BTN_GHOST, BTN_PRIMARY, COL_ACCENT, COL_ACCENT_HOVER, COL_BORDER, COL_FIELD, COL_OVERLAY,
-        COL_PANEL, COL_PLACEHOLDER, COL_ROW_ALT, COL_TEXT, COL_TEXT_DIM,
+        COL_PANEL, COL_PLACEHOLDER, COL_ROW_ALT, COL_SELECTION, COL_TEXT, COL_TEXT_DIM,
     },
 };
 
@@ -87,11 +87,53 @@ pub(crate) fn draw_ui(
         w: w - 2.0 * pad - add_w - gap,
         h: row_h,
     };
-    let was_focused = todos.focused;
-    let field_clicked = ui.take_click(field);
-    if field_clicked {
-        todos.caret_since = Instant::now();
+    todos.field_rect = field;
+
+    let ty = field.y + (field.h - line_height(text)) * 0.5;
+    let tx = field.x + 12.0 * s;
+    let max_tx = field.x + field.w - 12.0 * s;
+
+    // A press that started in the field drives selection: its first frame plants the
+    // caret with the anchor on top of it, every later frame drags the caret along
+    // the mouse, extending the selection. Mouse x maps against the scrolled-out
+    // text, so shift it by the current scroll offset first.
+    if !modal_was_open && ui.mouse_down && field.contains(ui.press) {
+        let x = if todos.field_drag { ui.mouse[0] } else { ui.press[0] };
+        todos.input.caret = todos.input.caret_from_x(x + todos.input.scroll_x, tx, text);
+        if !todos.field_drag {
+            todos.field_drag = true;
+            todos.input.anchor = todos.input.caret;
+            todos.caret_since = Instant::now();
+        }
+    } else if !ui.mouse_down {
+        todos.field_drag = false;
     }
+
+    let was_focused = todos.focused;
+    let field_click = ui.click_in(field);
+    if let Some(pos) = field_click {
+        todos.caret_since = Instant::now();
+        // A quick second (or third) click in place selects a word (or everything);
+        // it only counts when this click's press and release landed on the same spot.
+        let no_drag = (ui.press[0] - pos[0]).abs() + (ui.press[1] - pos[1]).abs() < 8.0;
+        let count = match todos.last_field_click {
+            Some((at, p, n))
+                if no_drag
+                    && at.elapsed().as_millis() < 500
+                    && (p[0] - pos[0]).abs() + (p[1] - pos[1]).abs() < 8.0 =>
+            {
+                n % 3 + 1
+            }
+            _ => 1,
+        };
+        todos.last_field_click = Some((Instant::now(), pos, count));
+        match count {
+            2 => todos.input.select_word_around(),
+            3 => todos.input.select_all(),
+            _ => {}
+        }
+    }
+    let field_clicked = field_click.is_some();
     if ui.hovered(field) {
         ui.pointer = true;
     }
@@ -105,16 +147,46 @@ pub(crate) fn draw_ui(
     );
     ui.rect(field.inset(1.5), COL_FIELD);
 
-    let ty = field.y + (field.h - line_height(text)) * 0.5;
-    let tx = field.x + 12.0 * s;
-    let max_tx = field.x + field.w - 12.0 * s;
-    if todos.input.is_empty() && !todos.focused {
+    if todos.input.text.is_empty() && !todos.focused {
         ui.text_at(tx, ty, "What needs doing?", text, COL_PLACEHOLDER);
     } else {
-        ui.text_clipped(tx, ty, &todos.input, text, COL_TEXT, max_tx);
+        // Scroll just far enough that the caret stays inside the field.
+        let view_w = max_tx - tx;
+        let text_w = todos.input.x_from_byte(todos.input.text.len(), 0.0, text);
+        let caret_x = todos.input.x_from_byte(todos.input.caret, 0.0, text);
+        let scroll_x = todos
+            .input
+            .scroll_x
+            .clamp(0.0, (text_w - view_w).max(0.0))
+            .max(caret_x - view_w)
+            .min(caret_x);
+        todos.input.scroll_x = scroll_x;
+
+        // Selection highlight under the text, clipped to the field.
+        if let Some(sel) = todos.input.selection() {
+            let x0 = (todos.input.x_from_byte(sel.start, tx, text) - scroll_x).max(tx);
+            let x1 = (todos.input.x_from_byte(sel.end, tx, text) - scroll_x).min(max_tx);
+            if x1 > x0 {
+                ui.rect(
+                    Rect {
+                        x: x0,
+                        y: ty,
+                        w: x1 - x0,
+                        h: line_height(text),
+                    },
+                    COL_SELECTION,
+                );
+            }
+        }
+
+        // Text, starting at the first char that is not fully scrolled out.
+        let (vis, lead) = todos.input.visible_start(scroll_x, text);
+        ui.text_clipped(tx - lead, ty, &todos.input.text[vis..], text, COL_TEXT, max_tx);
     }
     if todos.focused && caret_blinking(todos.caret_since) {
-        let caret_x = (tx + fit_width(&todos.input, text, max_tx - tx)).min(max_tx - 2.0);
+        let caret_x = (tx + todos.input.x_from_byte(todos.input.caret, 0.0, text)
+            - todos.input.scroll_x)
+            .clamp(tx, max_tx - 2.0);
         ui.rect(
             Rect {
                 x: caret_x,
@@ -137,7 +209,7 @@ pub(crate) fn draw_ui(
         add_btn,
         "Add",
         &BTN_PRIMARY,
-        !todos.input.trim().is_empty(),
+        !todos.input.text.trim().is_empty(),
     );
     if add_clicked {
         todos.add_task(save_path);

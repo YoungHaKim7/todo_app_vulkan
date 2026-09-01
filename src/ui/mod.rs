@@ -51,8 +51,12 @@ impl Rect {
 /// One frame's draw list plus the input state it was built against.
 pub(crate) struct Ui {
     pub(crate) verts: Vec<UiVertex>,
-    mouse: [f32; 2],
+    pub(crate) mouse: [f32; 2],
     pub(crate) clicks: Vec<[f32; 2]>,
+    /// Whether the left button is held, and where that press started; together with
+    /// `mouse` this drives drag selection in the input field.
+    pub(crate) mouse_down: bool,
+    pub(crate) press: [f32; 2],
     pub(crate) pointer: bool,
     /// Font-size step used by widgets that draw their own text.
     pub(crate) font_level: usize,
@@ -64,6 +68,8 @@ impl Ui {
             verts: Vec::new(),
             mouse,
             clicks: Vec::new(),
+            mouse_down: false,
+            press: [-1000.0; 2],
             pointer: false,
             font_level: DEFAULT_LEVEL,
         }
@@ -74,13 +80,13 @@ impl Ui {
     }
 
     pub(crate) fn take_click(&mut self, r: Rect) -> bool {
-        match self.clicks.iter().position(|p| r.contains(*p)) {
-            Some(i) => {
-                self.clicks.remove(i);
-                true
-            }
-            None => false,
-        }
+        self.click_in(r).is_some()
+    }
+
+    /// Removes and returns the first click inside `r`, if any.
+    pub(crate) fn click_in(&mut self, r: Rect) -> Option<[f32; 2]> {
+        let i = self.clicks.iter().position(|p| r.contains(*p))?;
+        Some(self.clicks.remove(i))
     }
 
     fn quad_rot(&mut self, center: [f32; 2], half: [f32; 2], angle: f32, color: [f32; 4]) {
@@ -195,17 +201,4 @@ pub(crate) fn line_height(size: Size) -> f32 {
 pub(crate) fn text_width(s: &str, size: Size) -> f32 {
     let fa = atlas::global();
     s.chars().map(|c| fa.advance(size, c)).sum()
-}
-
-pub(crate) fn fit_width(s: &str, size: Size, max_w: f32) -> f32 {
-    let fa = atlas::global();
-    let mut x = 0.0;
-    for c in s.chars() {
-        let adv = fa.advance(size, c);
-        if x + adv > max_w {
-            break;
-        }
-        x += adv;
-    }
-    x
 }

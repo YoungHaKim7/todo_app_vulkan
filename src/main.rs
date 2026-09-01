@@ -6,6 +6,7 @@
 //! - [`ui`]       — immediate-mode GUI core, widgets, and the ToDo screen
 //! - [`font`]     — embedded TTF font rasterization (Hack Nerd Font)
 //! - [`atlas`]    — glyph atlas packing and metrics
+//! - [`input`]    — text input field: caret, selection, and editing operations
 //! - [`todos`]    — ToDo model and persistence
 //! - [`settings`] — app settings (font size) and persistence
 //! - [`shaders`]  — SPIR-V shader modules
@@ -13,6 +14,7 @@
 mod app;
 mod atlas;
 mod font;
+mod input;
 mod renderer;
 mod settings;
 mod shaders;
