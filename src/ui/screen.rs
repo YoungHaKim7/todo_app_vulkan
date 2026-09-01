@@ -150,15 +150,25 @@ pub(crate) fn draw_ui(
     if todos.input.text.is_empty() && !todos.focused {
         ui.text_at(tx, ty, "What needs doing?", text, COL_PLACEHOLDER);
     } else {
+        // Text being composed by the IME trails the caret; keep it inside the field
+        // too when deciding how far to scroll.
+        let preedit_w = todos
+            .preedit
+            .as_deref()
+            .map(|p| text_width(p, text))
+            .unwrap_or(0.0);
         // Scroll just far enough that the caret stays inside the field.
         let view_w = max_tx - tx;
-        let text_w = todos.input.x_from_byte(todos.input.text.len(), 0.0, text);
         let caret_x = todos.input.x_from_byte(todos.input.caret, 0.0, text);
+        let text_w = todos
+            .input
+            .x_from_byte(todos.input.text.len(), 0.0, text)
+            .max(caret_x + preedit_w);
         let scroll_x = todos
             .input
             .scroll_x
             .clamp(0.0, (text_w - view_w).max(0.0))
-            .max(caret_x - view_w)
+            .max(caret_x + preedit_w - view_w)
             .min(caret_x);
         todos.input.scroll_x = scroll_x;
 
@@ -182,20 +192,40 @@ pub(crate) fn draw_ui(
         // Text, starting at the first char that is not fully scrolled out.
         let (vis, lead) = todos.input.visible_start(scroll_x, text);
         ui.text_clipped(tx - lead, ty, &todos.input.text[vis..], text, COL_TEXT, max_tx);
+
+        // The IME composition (e.g. Hangul jamo merging into a syllable) renders at
+        // the caret, underlined, until the IME commits it.
+        if let Some(preedit) = todos.preedit.as_deref() {
+            let px = tx + caret_x - scroll_x;
+            let end = ui.text_clipped(px, ty, preedit, text, COL_TEXT, max_tx);
+            if end > px {
+                let underline_y = ty + line_height(text) - 2.0 * s;
+                ui.line([px, underline_y], [end, underline_y], 1.5, COL_ACCENT);
+            }
+        }
     }
-    if todos.focused && caret_blinking(todos.caret_since) {
-        let caret_x = (tx + todos.input.x_from_byte(todos.input.caret, 0.0, text)
-            - todos.input.scroll_x)
-            .clamp(tx, max_tx - 2.0);
-        ui.rect(
-            Rect {
-                x: caret_x,
-                y: ty - 3.0 * s,
-                w: 2.0,
-                h: line_height(text) + 6.0 * s,
-            },
-            COL_ACCENT_HOVER,
-        );
+    let caret_x = (tx + todos.input.x_from_byte(todos.input.caret, 0.0, text)
+        - todos.input.scroll_x)
+        .clamp(tx, max_tx - 2.0);
+    if todos.focused {
+        // Where the IME popup should appear, published even while the caret blinks off.
+        todos.caret_area = Rect {
+            x: caret_x,
+            y: ty,
+            w: 2.0,
+            h: line_height(text),
+        };
+        if caret_blinking(todos.caret_since) {
+            ui.rect(
+                Rect {
+                    x: caret_x,
+                    y: ty - 3.0 * s,
+                    w: 2.0,
+                    h: line_height(text) + 6.0 * s,
+                },
+                COL_ACCENT_HOVER,
+            );
+        }
     }
 
     let add_btn = Rect {
@@ -347,10 +377,22 @@ pub(crate) fn draw_ui(
     }
 
     if !ui.clicks.is_empty() {
-        interacted_elsewhere = true;
+        // A release landing outside the field after a press inside it (a selection
+        // drag that ran past the edge) keeps focus on the field; only clicks that
+        // started elsewhere move focus away from it.
+        if !field.contains(ui.press) {
+            interacted_elsewhere = true;
+        }
         ui.clicks.clear();
     }
-    todos.focused = field_clicked || add_clicked || (was_focused && !interacted_elsewhere);
+    let focused = field_clicked || add_clicked || (was_focused && !interacted_elsewhere);
+    if focused {
+        todos.focused = true;
+    } else if todos.focused {
+        // Losing focus collapses the selection so no highlight is left that
+        // Del/Backspace can no longer erase.
+        todos.blur();
+    }
     if todos.focused != was_focused {
         todos.caret_since = Instant::now();
     }
@@ -358,7 +400,7 @@ pub(crate) fn draw_ui(
     if modal_was_open {
         // The settings window owns input while open; nothing underneath keeps focus or
         // shows a pointer cursor through the dimmer.
-        todos.focused = false;
+        todos.blur();
         ui.pointer = false;
 
         let panel = settings_panel(w, h, s);

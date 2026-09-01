@@ -2,11 +2,14 @@
 //!
 //! The font is embedded at build time and rasterized once per UI size at startup with
 //! per-pixel anti-aliasing (via `ab_glyph`); [`crate::atlas`] packs the results into a
-//! single texture.
+//! single texture. Characters the UI font does not cover (Hangul, other scripts) are
+//! rasterized on demand from a system fallback font.
 //!
 //! Font: Hack Nerd Font <https://github.com/ryanoasis/nerd-fonts>, SIL Open Font License 1.1.
 
-use ab_glyph::{FontRef, PxScale, PxScaleFont, ScaleFont};
+use std::sync::OnceLock;
+
+use ab_glyph::{FontRef, FontVec, PxScale, PxScaleFont, ScaleFont};
 
 /// Embedded font file.
 pub(crate) const TTF: &[u8] = include_bytes!("../assets/font/HackNerdFont-Regular.ttf");
@@ -125,41 +128,7 @@ pub(crate) fn rasterize_sizes() -> Vec<SizeRaster> {
 }
 
 fn rasterize(scaled: PxScaleFont<&FontRef>) -> SizeRaster {
-    let slots = charset()
-        .map(|c| {
-            let glyph = scaled.scaled_glyph(c);
-            let advance = scaled.h_advance(glyph.id);
-            let Some(outlined) = scaled.outline_glyph(glyph) else {
-                return GlyphSlot {
-                    advance,
-                    raster: None,
-                };
-            };
-
-            let bounds = outlined.px_bounds();
-            let width = bounds.width().ceil().max(0.0) as u32;
-            let height = bounds.height().ceil().max(0.0) as u32;
-            let mut pixels = vec![0u8; (width * height) as usize];
-            outlined.draw(|gx, gy, coverage| {
-                if gx < width && gy < height {
-                    pixels[(gy * width + gx) as usize] =
-                        (coverage.clamp(0.0, 1.0) * 255.0).round() as u8;
-                }
-            });
-            GlyphSlot {
-                advance,
-                raster: Some(Raster {
-                    width,
-                    height,
-                    pixels,
-                    left: bounds.min.x,
-                    // Glyph space is y-down with the baseline at the glyph position, so
-                    // the ink top above the baseline is the negated min.y.
-                    top: -bounds.min.y,
-                }),
-            }
-        })
-        .collect();
+    let slots = charset().map(|c| raster_slot(&scaled, c)).collect();
 
     SizeRaster {
         ascent: scaled.ascent(),
@@ -167,6 +136,94 @@ fn rasterize(scaled: PxScaleFont<&FontRef>) -> SizeRaster {
         line_gap: scaled.line_gap(),
         slots,
     }
+}
+
+/// Rasterizes one glyph of any scaled font into coverage pixels plus metrics.
+fn raster_slot<F: ab_glyph::Font>(scaled: &PxScaleFont<&F>, c: char) -> GlyphSlot {
+    let glyph = scaled.scaled_glyph(c);
+    let advance = scaled.h_advance(glyph.id);
+    let Some(outlined) = scaled.outline_glyph(glyph) else {
+        return GlyphSlot {
+            advance,
+            raster: None,
+        };
+    };
+
+    let bounds = outlined.px_bounds();
+    let width = bounds.width().ceil().max(0.0) as u32;
+    let height = bounds.height().ceil().max(0.0) as u32;
+    let mut pixels = vec![0u8; (width * height) as usize];
+    outlined.draw(|gx, gy, coverage| {
+        if gx < width && gy < height {
+            pixels[(gy * width + gx) as usize] = (coverage.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    });
+    GlyphSlot {
+        advance,
+        raster: Some(Raster {
+            width,
+            height,
+            pixels,
+            left: bounds.min.x,
+            // Glyph space is y-down with the baseline at the glyph position, so
+            // the ink top above the baseline is the negated min.y.
+            top: -bounds.min.y,
+        }),
+    }
+}
+
+/// System fonts tried (in order) as a source for characters the UI font lacks,
+/// mainly Hangul. The `TODO_KOREAN_FONT` environment variable overrides the list.
+const FALLBACK_FONTS: &[&str] = &[
+    "/usr/share/fonts/truetype/NotoSansCJKkr-VF.otf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+    "/usr/share/fonts/truetype/nanumgothic/NanumGothic.ttf",
+    "/usr/share/fonts/TTF/NanumGothic.ttf",
+    "/home/gy/.local/share/fonts/Google/TrueType/Noto Serif KR/Noto_Serif_KR_ExtraLight_VF_[wght].ttf",
+];
+
+/// The loaded fallback font, or `None` when no candidate exists or parses. Candidates
+/// must actually cover Hangul, so a parsed-but-Latin-only font is skipped.
+pub(crate) fn fallback() -> Option<&'static FontVec> {
+    static FONT: OnceLock<Option<FontVec>> = OnceLock::new();
+    FONT.get_or_init(|| {
+        let paths = std::env::var_os("TODO_KOREAN_FONT")
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .chain(FALLBACK_FONTS.iter().map(std::path::PathBuf::from));
+        for path in paths {
+            let Ok(data) = std::fs::read(&path) else {
+                continue;
+            };
+            let Ok(font) = FontVec::try_from_vec(data) else {
+                continue;
+            };
+            // Probe a Hangul syllable: coverage is what matters, not the name.
+            if ab_glyph::Font::glyph_id(&font, '가').0 != 0 {
+                println!("Korean fallback font: {}", path.display());
+                return Some(font);
+            }
+        }
+        println!("no Korean fallback font found; Hangul will render blank");
+        None
+    })
+    .as_ref()
+}
+
+/// Rasterizes one character the UI font does not cover, at `size`, from the fallback
+/// font; `None` when there is no fallback font or it lacks the glyph.
+pub(crate) fn rasterize_fallback(size: Size, c: char) -> Option<GlyphSlot> {
+    let font = fallback()?;
+    if ab_glyph::Font::glyph_id(font, c).0 == 0 {
+        return None; // not covered: render blank instead of a tofu box
+    }
+    let scaled = PxScaleFont {
+        font,
+        scale: PxScale::from(size.px()),
+    };
+    Some(raster_slot(&scaled, c))
 }
 
 #[cfg(test)]

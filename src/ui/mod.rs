@@ -99,7 +99,7 @@ impl Ui {
             [1.0, 1.0],
             [-1.0, 1.0],
         ];
-        let uv = atlas::global().white_uv();
+        let uv = atlas::white_uv();
         for cnr in CORNERS {
             let lx = cnr[0] * half[0];
             let ly = cnr[1] * half[1];
@@ -136,10 +136,9 @@ impl Ui {
     }
 
     /// Draws one glyph with its top-left placed from the pen position and baseline;
-    /// returns the pen advance.
+    /// returns the pen advance. Rasterizes fallback glyphs (e.g. Hangul) on demand.
     fn glyph(&mut self, x: f32, baseline: f32, c: char, size: Size, color: [f32; 4]) -> f32 {
-        let fa = atlas::global();
-        if let Some(quad) = fa.quad(size, c) {
+        if let Some(quad) = atlas::quad(size, c) {
             let x0 = x + quad.left;
             let y0 = baseline - quad.top;
             const FRACS: [[f32; 2]; 6] = [
@@ -153,12 +152,12 @@ impl Ui {
             for f in FRACS {
                 self.verts.push(UiVertex {
                     pos: [x0 + f[0] * quad.w, y0 + f[1] * quad.h],
-                    uv: fa.quad_uv(quad, f[0], f[1]),
+                    uv: atlas::quad_uv(&quad, f[0], f[1]),
                     color,
                 });
             }
         }
-        x + fa.advance(size, c)
+        x + atlas::advance(size, c)
     }
 
     /// Draws a string whose line box starts at (`x`, `y`); returns the pen end position.
@@ -184,7 +183,7 @@ impl Ui {
         let baseline = (y + fa.size(size).ascent).round();
         let mut cx = x;
         for c in s.chars() {
-            if cx + fa.advance(size, c) > max_x {
+            if cx + atlas::advance(size, c) > max_x {
                 break;
             }
             cx = self.glyph(cx, baseline, c, size, color);
@@ -199,6 +198,5 @@ pub(crate) fn line_height(size: Size) -> f32 {
 }
 
 pub(crate) fn text_width(s: &str, size: Size) -> f32 {
-    let fa = atlas::global();
-    s.chars().map(|c| fa.advance(size, c)).sum()
+    s.chars().map(|c| atlas::advance(size, c)).sum()
 }

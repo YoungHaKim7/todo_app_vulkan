@@ -2,10 +2,11 @@
 //! operation on them.
 //!
 //! Positions are byte offsets into `text` and always land on char boundaries (the
-//! charset allows the multi-byte `·` and `−`, so `±1` byte stepping is never safe).
-//! Selection is the range between `anchor` and `caret`; they are equal when nothing
-//! is selected. Horizontal scrolling of the field's viewport lives here too, so the
-//! renderer can keep the caret visible.
+//! text mixes single-byte ASCII with multi-byte characters such as `·`, `−`, and
+//! Hangul, so `±1` byte stepping is never safe). Selection is the range between
+//! `anchor` and `caret`; they are equal when nothing is selected. Horizontal
+//! scrolling of the field's viewport lives here too, so the renderer can keep the
+//! caret visible.
 
 use crate::{atlas, font::Size};
 
@@ -263,12 +264,11 @@ impl TextField {
     /// before a glyph when they hit its left half). `text_x` is where the text starts
     /// (unscrolled).
     pub(crate) fn caret_from_x(&self, x: f32, text_x: f32, size: Size) -> usize {
-        let fa = atlas::global();
         let mut best = 0usize;
         let mut best_d = (x - text_x).abs();
         let mut cx = text_x;
         for (i, c) in self.text.char_indices() {
-            cx += fa.advance(size, c);
+            cx += atlas::advance(size, c);
             let d = (x - cx).abs();
             if d < best_d {
                 best_d = d;
@@ -281,13 +281,12 @@ impl TextField {
     /// Pixel x of the char boundary `i`, relative to the unscrolled text origin
     /// `text_x`.
     pub(crate) fn x_from_byte(&self, i: usize, text_x: f32, size: Size) -> f32 {
-        let fa = atlas::global();
         let mut cx = text_x;
         for (j, c) in self.text.char_indices() {
             if j >= i {
                 break;
             }
-            cx += fa.advance(size, c);
+            cx += atlas::advance(size, c);
         }
         cx
     }
@@ -295,10 +294,9 @@ impl TextField {
     /// First char still (partly) visible when the text is scrolled left by
     /// `scroll_x`: its byte offset plus how many pixels of it are cut off.
     pub(crate) fn visible_start(&self, scroll_x: f32, size: Size) -> (usize, f32) {
-        let fa = atlas::global();
         let mut cx = 0.0;
         for (i, c) in self.text.char_indices() {
-            let adv = fa.advance(size, c);
+            let adv = atlas::advance(size, c);
             if cx + adv > scroll_x {
                 return (i, scroll_x - cx);
             }

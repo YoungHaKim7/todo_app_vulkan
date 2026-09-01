@@ -8,7 +8,7 @@ use vulkano::{
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
         AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferToImageInfo, CopyImageToBufferInfo,
-        PrimaryCommandBufferAbstract, RenderingAttachmentInfo, RenderingInfo,
+        RenderingAttachmentInfo, RenderingInfo,
         allocator::StandardCommandBufferAllocator,
     },
     descriptor_set::{
@@ -83,7 +83,6 @@ pub(crate) struct GpuContext {
     pub(crate) descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     pub(crate) command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     pub(crate) sampler: Arc<Sampler>,
-    pub(crate) atlas: Arc<ImageView>,
 }
 
 impl GpuContext {
@@ -185,60 +184,6 @@ impl GpuContext {
         )
         .unwrap();
 
-        let atlas = {
-            let glyph_atlas = atlas::global();
-            let atlas_image = Image::new(
-                &memory_allocator,
-                &ImageCreateInfo {
-                    image_type: ImageType::Dim2d,
-                    format: Format::R8_UNORM,
-                    extent: [glyph_atlas.width, glyph_atlas.height, 1],
-                    usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo::default(),
-            )
-            .unwrap();
-
-            let staging = Buffer::from_iter(
-                &memory_allocator,
-                &BufferCreateInfo {
-                    usage: BufferUsage::TRANSFER_SRC,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                glyph_atlas.pixels.clone(),
-            )
-            .unwrap();
-
-            let mut uploads = AutoCommandBufferBuilder::primary(
-                command_buffer_allocator.clone(),
-                queue.queue_family_index(),
-                CommandBufferUsage::OneTimeSubmit,
-            )
-            .unwrap();
-            uploads
-                .copy_buffer_to_image(CopyBufferToImageInfo::new(staging, atlas_image.clone()))
-                .unwrap();
-            uploads
-                .build()
-                .unwrap()
-                .execute(queue.clone())
-                .unwrap()
-                .then_signal_fence_and_flush()
-                .map_err(Validated::unwrap)
-                .unwrap()
-                .wait(None)
-                .map_err(Validated::unwrap)
-                .unwrap();
-
-            ImageView::new_default(&atlas_image).unwrap()
-        };
-
         Self {
             instance,
             device,
@@ -247,9 +192,76 @@ impl GpuContext {
             descriptor_set_allocator,
             command_buffer_allocator,
             sampler,
-            atlas,
         }
     }
+}
+
+/// Creates the atlas texture at its current size, uploads its pixels, and returns the
+/// view plus the generation and size uploaded. `after` orders the upload behind an
+/// in-flight frame still reading the previous texture.
+fn upload_atlas(
+    gpu: &GpuContext,
+    after: Option<Box<dyn GpuFuture>>,
+) -> (Arc<ImageView>, u64, [u32; 2]) {
+    let (width, height) = atlas::dimensions();
+    let image = Image::new(
+        &gpu.memory_allocator,
+        &ImageCreateInfo {
+            image_type: ImageType::Dim2d,
+            format: Format::R8_UNORM,
+            extent: [width, height, 1],
+            usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
+            ..Default::default()
+        },
+        &AllocationCreateInfo::default(),
+    )
+    .unwrap();
+
+    let staging = Buffer::from_iter(
+        &gpu.memory_allocator,
+        &BufferCreateInfo {
+            usage: BufferUsage::TRANSFER_SRC,
+            ..Default::default()
+        },
+        &AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+            ..Default::default()
+        },
+        atlas::pixels(),
+    )
+    .unwrap();
+
+    let mut uploads = AutoCommandBufferBuilder::primary(
+        gpu.command_buffer_allocator.clone(),
+        gpu.queue.queue_family_index(),
+        CommandBufferUsage::OneTimeSubmit,
+    )
+    .unwrap();
+    uploads
+        .copy_buffer_to_image(CopyBufferToImageInfo::new(staging, image.clone()))
+        .unwrap();
+    let upload = uploads.build().unwrap();
+    let start = sync::now(gpu.device.clone());
+    let future = match after {
+        Some(prev) => start.join(prev).boxed(),
+        None => start.boxed(),
+    };
+    future
+        .then_execute(gpu.queue.clone(), upload)
+        .unwrap()
+        .then_signal_fence_and_flush()
+        .map_err(Validated::unwrap)
+        .unwrap()
+        .wait(None)
+        .map_err(Validated::unwrap)
+        .unwrap();
+
+    (
+        ImageView::new_default(&image).unwrap(),
+        atlas::generation(),
+        [width, height],
+    )
 }
 
 /// Window-bound Vulkan objects, rebuilt whenever the swapchain must be recreated.
@@ -259,6 +271,11 @@ pub(crate) struct RenderContext {
     pub(crate) attachment_image_views: Vec<Arc<ImageView>>,
     pub(crate) pipeline: Arc<GraphicsPipeline>,
     pub(crate) descriptor_set: Arc<DescriptorSet>,
+    /// The glyph atlas texture. On-demand glyphs (Hangul) bump the atlas generation,
+    /// and the texture is recreated and re-uploaded behind the previous frame.
+    pub(crate) atlas_view: Arc<ImageView>,
+    pub(crate) atlas_gen: u64,
+    pub(crate) atlas_size: [u32; 2],
     pub(crate) viewport: Viewport,
     // One vertex buffer per swapchain image. The image we just acquired is guaranteed to no
     // longer be in use by the GPU, so its buffer can always be written without a conflict.
@@ -318,6 +335,8 @@ impl RenderContext {
             .iter()
             .map(|image| ImageView::new_default(image).unwrap())
             .collect::<Vec<_>>();
+
+        let (atlas_view, atlas_gen, atlas_size) = upload_atlas(gpu, None);
 
         let (pipeline, descriptor_set) = {
             let vs = unsafe { ui_vs::load(&gpu.device) }
@@ -398,19 +417,8 @@ impl RenderContext {
             )
             .unwrap();
 
-            let descriptor_set = DescriptorSet::new(
-                &gpu.descriptor_set_allocator,
-                &pipeline.layout().set_layouts()[0],
-                &[WriteDescriptorSet::image(
-                    1,
-                    &DescriptorImageInfo {
-                        image_view: Some(&gpu.atlas),
-                        ..Default::default()
-                    },
-                )],
-                &[],
-            )
-            .unwrap();
+            let descriptor_set =
+                make_descriptor_set(gpu, &pipeline, &atlas_view);
 
             (pipeline, descriptor_set)
         };
@@ -431,12 +439,52 @@ impl RenderContext {
             attachment_image_views,
             pipeline,
             descriptor_set,
+            atlas_view,
+            atlas_gen,
+            atlas_size,
             viewport,
             vertex_buffers,
             recreate_swapchain: false,
             previous_frame_end: Some(sync::now(gpu.device.clone()).boxed()),
         }
     }
+
+    /// Brings the atlas texture back in sync with the CPU-side atlas when new glyphs
+    /// were rasterized, replacing texture and descriptor set behind the previous
+    /// frame so no read is interrupted.
+    fn refresh_atlas(&mut self, gpu: &GpuContext) {
+        if self.atlas_gen == atlas::generation() {
+            return;
+        }
+        let previous = self.previous_frame_end.take();
+        let (view, uploaded_gen, size) = upload_atlas(gpu, previous);
+        self.atlas_view = view;
+        self.atlas_gen = uploaded_gen;
+        self.atlas_size = size;
+        self.descriptor_set = make_descriptor_set(gpu, &self.pipeline, &self.atlas_view);
+        self.previous_frame_end = Some(sync::now(gpu.device.clone()).boxed());
+    }
+}
+
+/// The sampler + atlas-image descriptor set bound by the UI pipeline.
+fn make_descriptor_set(
+    gpu: &GpuContext,
+    pipeline: &Arc<GraphicsPipeline>,
+    atlas_view: &Arc<ImageView>,
+) -> Arc<DescriptorSet> {
+    DescriptorSet::new(
+        &gpu.descriptor_set_allocator,
+        &pipeline.layout().set_layouts()[0],
+        &[WriteDescriptorSet::image(
+            1,
+            &DescriptorImageInfo {
+                image_view: Some(atlas_view),
+                ..Default::default()
+            },
+        )],
+        &[],
+    )
+    .unwrap()
 }
 
 fn create_vertex_buffers(
@@ -513,6 +561,8 @@ impl App {
             w,
             h,
         );
+        // Glyphs rasterized on demand this frame (e.g. new Hangul) go up before drawing.
+        rcx.refresh_atlas(&self.gpu);
         if ui.verts.len() > MAX_VERTICES {
             ui.verts.truncate(MAX_VERTICES);
         }
@@ -630,13 +680,10 @@ impl App {
         let width = 940u32;
         let height = 640u32;
 
-        let rcx = match self.rcx.as_ref() {
+        let rcx = match self.rcx.as_mut() {
             Some(rcx) => rcx,
             None => return,
         };
-        let pipeline = rcx.pipeline.clone();
-        let descriptor_set = rcx.descriptor_set.clone();
-        let layout = pipeline.layout().clone();
         let color_format = rcx.swapchain.image_format();
 
         let mut ui = Ui::new([-1000.0; 2]);
@@ -651,6 +698,13 @@ impl App {
         );
         let vertices = ui.verts;
         let vertex_count = vertices.len() as u32;
+
+        // Capture the pipeline and descriptor set only after draw_ui, which may have
+        // rasterized new glyphs and replaced the atlas.
+        rcx.refresh_atlas(&self.gpu);
+        let pipeline = rcx.pipeline.clone();
+        let descriptor_set = rcx.descriptor_set.clone();
+        let layout = pipeline.layout().clone();
 
         let vertex_buffer = Buffer::from_iter(
             &self.gpu.memory_allocator,

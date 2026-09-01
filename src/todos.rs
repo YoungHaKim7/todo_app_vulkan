@@ -10,7 +10,9 @@ use crate::{
 pub(crate) fn sanitize(c: char) -> Option<char> {
     if c == '\t' {
         Some(' ')
-    } else if c.is_ascii_graphic() || c == ' ' || c == '·' || c == '−' {
+    } else if !c.is_control() {
+        // Hangul and any other script pass through; the atlas rasterizes what the
+        // fonts cover and falls back to a blank advance otherwise.
         Some(c)
     } else {
         None
@@ -51,6 +53,12 @@ pub(crate) struct Todos {
     /// When and where the input field was last clicked, for double/triple-click
     /// word/all selection.
     pub(crate) last_field_click: Option<(Instant, [f32; 2], u32)>,
+    /// Text currently being composed by an IME (Hangul jamo → syllable); drawn at the
+    /// caret, underlined, and not part of the field until committed.
+    pub(crate) preedit: Option<String>,
+    /// The caret's rect on screen from the last drawn frame, so the IME popup can be
+    /// positioned at it between frames.
+    pub(crate) caret_area: Rect,
 }
 
 impl Todos {
@@ -73,6 +81,13 @@ impl Todos {
             },
             field_drag: false,
             last_field_click: None,
+            preedit: None,
+            caret_area: Rect {
+                x: -1.0,
+                y: -1.0,
+                w: 0.0,
+                h: 0.0,
+            },
         }
     }
 
@@ -93,6 +108,7 @@ impl Todos {
         self.items.push(Todo { text, done: false });
         self.input.clear();
         self.caret_since = Instant::now();
+        self.preedit = None;
         self.save(path);
     }
 
@@ -103,6 +119,15 @@ impl Todos {
     pub(crate) fn done_count(&self) -> usize {
         self.items.iter().filter(|t| t.done).count()
     }
+
+    /// Blurs the input field, collapsing any selection and dropping any composition:
+    /// a highlight lingering in an unfocused field would look erasable, but
+    /// Del/Backspace only work while focused.
+    pub(crate) fn blur(&mut self) {
+        self.input.anchor = self.input.caret;
+        self.focused = false;
+        self.preedit = None;
+    }
 }
 
 #[cfg(test)]
@@ -110,14 +135,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sanitize_keeps_only_renderable_ascii() {
+    fn sanitize_keeps_printable_and_drops_control() {
         assert_eq!(sanitize('a'), Some('a'));
         assert_eq!(sanitize(' '), Some(' '));
         assert_eq!(sanitize('\t'), Some(' '));
         assert_eq!(sanitize('\n'), None);
         assert_eq!(sanitize('·'), Some('·'));
         assert_eq!(sanitize('−'), Some('−'));
-        assert_eq!(sanitize('\u{e9}'), None);
+        assert_eq!(sanitize('가'), Some('가'), "Hangul syllables are typable");
+        assert_eq!(sanitize('한'), Some('한'));
+        assert_eq!(sanitize('글'), Some('글'));
+        assert_eq!(sanitize('\u{7}'), None, "control characters are dropped");
+    }
+
+    #[test]
+    fn blur_collapses_selection() {
+        let mut todos = Todos {
+            items: Vec::new(),
+            input: TextField::new(),
+            focused: true,
+            caret_since: Instant::now(),
+            scroll: 0.0,
+            max_scroll: 0.0,
+            field_rect: Rect {
+                x: -1.0,
+                y: -1.0,
+                w: 0.0,
+                h: 0.0,
+            },
+            field_drag: false,
+            last_field_click: None,
+            preedit: None,
+            caret_area: Rect {
+                x: -1.0,
+                y: -1.0,
+                w: 0.0,
+                h: 0.0,
+            },
+        };
+        todos.input.insert_str("hello");
+        todos.input.select_all();
+        assert_eq!(todos.input.selection(), Some(0..5));
+
+        todos.blur();
+        assert!(!todos.focused);
+        assert!(
+            todos.input.selection().is_none(),
+            "no highlight may outlive focus"
+        );
+        assert_eq!(todos.input.text, "hello", "blur keeps the text");
     }
 
     #[test]
@@ -148,6 +214,13 @@ mod tests {
             },
             field_drag: false,
             last_field_click: None,
+            preedit: None,
+            caret_area: Rect {
+                x: -1.0,
+                y: -1.0,
+                w: 0.0,
+                h: 0.0,
+            },
         };
         todos.save(&path);
         let loaded = Todos::load(&path);

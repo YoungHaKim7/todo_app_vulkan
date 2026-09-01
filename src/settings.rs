@@ -48,13 +48,15 @@ impl Settings {
 mod tests {
     use super::*;
 
-    fn temp_path() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("vulkan_todo_settings_{}.txt", std::process::id()))
+    /// Per-test temp path: tests run in parallel and share a process id, so the name
+    /// must differ per test or one test's cleanup deletes another's fixture.
+    fn temp_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("vulkan_todo_settings_{tag}_{}.txt", std::process::id()))
     }
 
     #[test]
     fn missing_file_falls_back_to_default() {
-        let path = std::env::temp_dir().join("vulkan_todo_settings_absent.txt");
+        let path = temp_path("absent");
         let _ = fs::remove_file(&path);
         let settings = Settings::load(&path);
         assert!(!settings.open);
@@ -63,7 +65,7 @@ mod tests {
 
     #[test]
     fn save_file_roundtrip_and_clamping() {
-        let path = temp_path();
+        let path = temp_path("roundtrip");
         let mut settings = Settings {
             open: true,
             font_level: 0,
@@ -80,7 +82,7 @@ mod tests {
 
     #[test]
     fn garbage_file_falls_back_to_default() {
-        let path = temp_path();
+        let path = temp_path("garbage");
         fs::write(&path, "hello world\nfont=abc\n").unwrap();
         assert_eq!(Settings::load(&path).font_level, DEFAULT_LEVEL);
         let _ = fs::remove_file(&path);

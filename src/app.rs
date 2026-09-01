@@ -5,7 +5,8 @@ use std::{path::PathBuf, time::Instant};
 use copypasta::{ClipboardContext, ClipboardProvider, nop_clipboard::NopClipboardContext};
 use winit::{
     application::ApplicationHandler,
-    event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
+    dpi::{PhysicalPosition, PhysicalSize},
+    event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
     keyboard::{Key, ModifiersState, NamedKey},
     window::{Window, WindowId},
@@ -39,6 +40,14 @@ pub(crate) struct App {
     pub(crate) cursor_is_pointer: bool,
     pub(crate) dump_done: bool,
     pub(crate) rcx: Option<RenderContext>,
+    /// Whether the input field was focused when the window lost focus, so it regains
+    /// focus (and stays editable) when the window is focused again.
+    pub(crate) field_focus_on_blur: bool,
+    /// Whether the platform IME is currently attached to the window; enabled only
+    /// while the input field is focused, so Hangul composition reaches the field.
+    pub(crate) ime_on: bool,
+    /// Caret rect last handed to the IME, to skip redundant position updates.
+    pub(crate) ime_area: Option<[f32; 4]>,
 }
 
 impl App {
@@ -78,6 +87,9 @@ impl App {
             cursor_is_pointer: false,
             dump_done: false,
             rcx: None,
+            field_focus_on_blur: false,
+            ime_on: false,
+            ime_area: None,
         }
     }
 
@@ -128,6 +140,44 @@ impl App {
         let typed: String = s.chars().filter_map(sanitize).collect();
         if !typed.is_empty() {
             self.edit(|f| f.insert_str(&typed));
+        }
+    }
+
+    /// IME events: Hangul (and other script) composition via fcitx5/ibus. `Preedit`
+    /// shows the text being composed at the caret; `Commit` types the finished text.
+    fn handle_ime(&mut self, ime: Ime) {
+        if self.settings.open || !self.todos.focused {
+            self.todos.preedit = None;
+            return;
+        }
+        match ime {
+            Ime::Enabled | Ime::Disabled => self.todos.preedit = None,
+            Ime::Preedit(text, _) => self.todos.preedit = (!text.is_empty()).then_some(text),
+            Ime::Commit(text) => {
+                self.todos.preedit = None;
+                self.type_str(&text);
+            }
+        }
+    }
+
+    /// Attaches or detaches the platform IME as the input field gains or loses focus,
+    /// and keeps the composition popup anchored at the caret.
+    fn sync_ime(&mut self, window: &Window) {
+        let wanted = self.todos.focused && !self.settings.open;
+        if wanted != self.ime_on {
+            window.set_ime_allowed(wanted);
+            self.ime_on = wanted;
+        }
+        if wanted {
+            let a = self.todos.caret_area;
+            let area = [a.x, a.y, a.w, a.h];
+            if self.ime_area != Some(area) {
+                window.set_ime_cursor_area(
+                    PhysicalPosition::new(a.x as f64, a.y as f64),
+                    PhysicalSize::new(a.w as f64, a.h.max(1.0) as f64),
+                );
+                self.ime_area = Some(area);
+            }
         }
     }
 
@@ -252,8 +302,21 @@ impl ApplicationHandler for App {
                     self.handle_keyboard(event);
                 }
             }
-            WindowEvent::Focused(false) => {
-                self.todos.focused = false;
+            WindowEvent::Ime(ime) => self.handle_ime(ime),
+            WindowEvent::Focused(focused) => {
+                if focused {
+                    // The field keeps its selection across alt-tab; give focus back
+                    // so the selection stays erasable and typing continues.
+                    if self.field_focus_on_blur && !self.settings.open {
+                        self.todos.focused = true;
+                    }
+                    self.field_focus_on_blur = false;
+                } else {
+                    self.field_focus_on_blur = self.todos.focused;
+                    self.todos.focused = false;
+                    // The IME resets composition when its window loses focus.
+                    self.todos.preedit = None;
+                }
             }
             WindowEvent::RedrawRequested => {
                 self.redraw();
@@ -279,7 +342,8 @@ impl ApplicationHandler for App {
                 self.settings.open = true;
             }
             // Seed the input field (focused) so editing visuals can be rendered
-            // headlessly; TODO_INPUT_SELECT additionally selects everything.
+            // headlessly; TODO_INPUT_SELECT additionally selects everything, and
+            // TODO_PREEDIT shows a composition string at the caret.
             if let Ok(text) = std::env::var("TODO_INPUT") {
                 self.todos.input.clear();
                 self.todos.input.insert_str(&text);
@@ -288,12 +352,18 @@ impl ApplicationHandler for App {
                     self.todos.input.select_all();
                 }
             }
+            if let Ok(preedit) = std::env::var("TODO_PREEDIT") {
+                self.todos.preedit = (!preedit.is_empty()).then_some(preedit);
+            }
             self.dump_frame(&path.to_string_lossy());
             event_loop.exit();
             return;
         }
-        if let Some(rcx) = self.rcx.as_ref() {
-            rcx.window.request_redraw();
+        // Attach the IME to the caret between frames; `caret_area` is where the last
+        // drawn frame left it.
+        if let Some(window) = self.rcx.as_ref().map(|rcx| rcx.window.clone()) {
+            self.sync_ime(&window);
+            window.request_redraw();
         }
     }
 }

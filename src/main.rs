@@ -1,11 +1,12 @@
 //! Vulkan ToDo app: an immediate-mode GUI rendered with Vulkano + winit.
 //!
 //! Module map:
-//! - [`app`]      — application state and event handling
+//! - [`app`]      — application state and event handling (incl. IME input)
 //! - [`renderer`] — Vulkan setup and frame rendering
 //! - [`ui`]       — immediate-mode GUI core, widgets, and the ToDo screen
-//! - [`font`]     — embedded TTF font rasterization (Hack Nerd Font)
-//! - [`atlas`]    — glyph atlas packing and metrics
+//! - [`font`]     — embedded TTF font rasterization (Hack Nerd Font) plus a system
+//!   fallback font for Hangul and other uncovered characters
+//! - [`atlas`]    — glyph atlas packing and metrics (static bands + on-demand glyphs)
 //! - [`input`]    — text input field: caret, selection, and editing operations
 //! - [`todos`]    — ToDo model and persistence
 //! - [`settings`] — app settings (font size) and persistence
