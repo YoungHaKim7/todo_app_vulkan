@@ -13,6 +13,7 @@ use ab_glyph::{FontRef, FontVec, PxScale, PxScaleFont, ScaleFont};
 
 /// Embedded font file.
 pub(crate) const TTF: &[u8] = include_bytes!("../assets/font/HackNerdFont-Regular.ttf");
+// pub(crate) const TTF: &[u8] = include_bytes!("../assets/font/NotoSerifKR-VariableFont_wght.ttf");
 
 /// Number of font-size steps the user can choose between in the settings window.
 pub(crate) const LEVELS: usize = 5;
