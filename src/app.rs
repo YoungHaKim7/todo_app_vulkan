@@ -118,8 +118,10 @@ impl App {
             }
             Key::Named(NamedKey::ArrowLeft) => self.edit(|f| f.move_left(ctrl, shift)),
             Key::Named(NamedKey::ArrowRight) => self.edit(|f| f.move_right(ctrl, shift)),
-            Key::Named(NamedKey::Home) => self.edit(|f| f.move_to_start(shift)),
-            Key::Named(NamedKey::End) => self.edit(|f| f.move_to_end(shift)),
+            Key::Named(NamedKey::ArrowUp) => self.edit(|f| f.move_up(shift)),
+            Key::Named(NamedKey::ArrowDown) => self.edit(|f| f.move_down(shift)),
+            Key::Named(NamedKey::Home) => self.edit(|f| f.move_to_line_start(shift)),
+            Key::Named(NamedKey::End) => self.edit(|f| f.move_to_line_end(shift)),
             Key::Named(NamedKey::Space) => self.type_str(" "),
             // Ctrl chords act on the selection or clipboard; anything else with Ctrl
             // held types nothing rather than inserting a control character.

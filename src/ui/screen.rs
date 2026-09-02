@@ -9,6 +9,7 @@ use super::{
 use crate::font::{self, Size};
 
 use crate::{
+    input::Wrap,
     settings::Settings,
     todos::Todos,
     ui::theme::{
@@ -20,6 +21,10 @@ use crate::{
 /// How far the layout stretches per font level, relative to the default level. Glyphs grow
 /// a little faster than this so bigger text also packs slightly more densely.
 const LAYOUT_SCALE: [f32; font::LEVELS] = [0.86, 0.93, 1.0, 1.16, 1.32];
+
+/// How many wrapped lines the input field shows; anything past them runs off the
+/// bottom of the field instead of scrolling.
+const FIELD_MAX_LINES: usize = 2;
 
 pub(crate) fn draw_ui(
     todos: &mut Todos,
@@ -81,29 +86,58 @@ pub(crate) fn draw_ui(
     let add_w = 88.0 * s;
     let gap = 10.0 * s;
 
+    let field_w = w - 2.0 * pad - add_w - gap;
+    let tx = pad + 12.0 * s;
+    let max_tx = pad + field_w - 12.0 * s;
+
+    // The wrap of the text alone feeds the arrow keys (visual-line moves).
+    todos.input.wrap = Wrap::new(&todos.input.text, max_tx - tx, text);
+
+    // What the field draws: the text with any IME composition spliced in at the
+    // caret, so the composition wraps together with the text it will join. Owned,
+    // because selection edits below take the field mutably.
+    let caret = todos.input.caret;
+    let preedit_len = todos.preedit.as_deref().map_or(0, str::len);
+    let mut display = todos.input.text.clone();
+    if preedit_len > 0 {
+        display.insert_str(caret, todos.preedit.as_deref().unwrap_or(""));
+    }
+    // Byte offsets map between the text and the display string by skipping the
+    // spliced-in composition; inside it they clamp to the caret.
+    let to_display = |o: usize| o + if o > caret { preedit_len } else { 0 };
+    let to_text = |d: usize| {
+        if d <= caret {
+            d
+        } else {
+            d.saturating_sub(preedit_len).max(caret)
+        }
+    };
+
+    // The field wraps instead of scrolling sideways: it grows to hold a second
+    // line, and text past the shown lines runs off the bottom.
+    let wrap = Wrap::new(&display, max_tx - tx, text);
+    let shown = wrap.lines().min(FIELD_MAX_LINES);
+    let content_h = shown as f32 * line_height(text);
+    let field_h = row_h.max(content_h + 13.0 * s);
     let field = Rect {
         x: pad,
         y: y0,
-        w: w - 2.0 * pad - add_w - gap,
-        h: row_h,
+        w: field_w,
+        h: field_h,
     };
     todos.field_rect = field;
-
-    let ty = field.y + (field.h - line_height(text)) * 0.5;
-    let tx = field.x + 12.0 * s;
-    let max_tx = field.x + field.w - 12.0 * s;
+    let ty0 = field.y + (field_h - content_h) * 0.5;
+    let line_y = |n: usize| ty0 + n as f32 * line_height(text);
 
     // A press that started in the field drives selection: its first frame plants the
     // caret with the anchor on top of it, every later frame drags the caret along
-    // the mouse, extending the selection. Mouse x maps against the scrolled-out
-    // text, so shift it by the current scroll offset first.
+    // the mouse, extending the selection. The press maps to a line by its y, then
+    // to the caret closest to its x on that line.
     if !modal_was_open && ui.mouse_down && field.contains(ui.press) {
-        let x = if todos.field_drag {
-            ui.mouse[0]
-        } else {
-            ui.press[0]
-        };
-        todos.input.caret = todos.input.caret_from_x(x + todos.input.scroll_x, tx, text);
+        let p = if todos.field_drag { ui.mouse } else { ui.press };
+        let n = (((p[1] - ty0) / line_height(text)).floor().max(0.0) as usize).min(shown - 1);
+        let d = wrap.caret_at(&display, p[0] - tx, n);
+        todos.input.caret = to_text(d);
         if !todos.field_drag {
             todos.field_drag = true;
             todos.input.anchor = todos.input.caret;
@@ -152,85 +186,80 @@ pub(crate) fn draw_ui(
     ui.rect(field.inset(1.5), COL_FIELD);
 
     if todos.input.text.is_empty() && !todos.focused {
-        ui.text_at(tx, ty, "What needs doing?", text, COL_PLACEHOLDER);
+        ui.text_at(
+            tx,
+            field.y + (field_h - line_height(text)) * 0.5,
+            "What needs doing?",
+            text,
+            COL_PLACEHOLDER,
+        );
     } else {
-        // Text being composed by the IME trails the caret; keep it inside the field
-        // too when deciding how far to scroll.
-        let preedit_w = todos
-            .preedit
-            .as_deref()
-            .map(|p| text_width(p, text))
-            .unwrap_or(0.0);
-        // Scroll just far enough that the caret stays inside the field.
-        let view_w = max_tx - tx;
-        let caret_x = todos.input.x_from_byte(todos.input.caret, 0.0, text);
-        let text_w = todos
-            .input
-            .x_from_byte(todos.input.text.len(), 0.0, text)
-            .max(caret_x + preedit_w);
-        let scroll_x = todos
-            .input
-            .scroll_x
-            .clamp(0.0, (text_w - view_w).max(0.0))
-            .max(caret_x + preedit_w - view_w)
-            .min(caret_x);
-        todos.input.scroll_x = scroll_x;
-
-        // Selection highlight under the text, clipped to the field.
+        // Selection highlight under the text, one run per wrapped line.
         if let Some(sel) = todos.input.selection() {
-            let x0 = (todos.input.x_from_byte(sel.start, tx, text) - scroll_x).max(tx);
-            let x1 = (todos.input.x_from_byte(sel.end, tx, text) - scroll_x).min(max_tx);
-            if x1 > x0 {
-                ui.rect(
-                    Rect {
-                        x: x0,
-                        y: ty,
-                        w: x1 - x0,
-                        h: line_height(text),
-                    },
-                    COL_SELECTION,
-                );
+            let (d0, d1) = (to_display(sel.start), to_display(sel.end));
+            for n in 0..shown {
+                let ls = wrap.line_start(n);
+                let le = wrap.line_end(&display, n);
+                let (a, b) = (d0.max(ls), d1.min(le));
+                if b > a {
+                    let x0 = tx + wrap.x_in_line(&display, a, n);
+                    let x1 = (tx + wrap.x_in_line(&display, b, n)).min(max_tx);
+                    if x1 > x0 {
+                        ui.rect(
+                            Rect {
+                                x: x0,
+                                y: line_y(n),
+                                w: x1 - x0,
+                                h: line_height(text),
+                            },
+                            COL_SELECTION,
+                        );
+                    }
+                }
             }
         }
 
-        // Text, starting at the first char that is not fully scrolled out.
-        let (vis, lead) = todos.input.visible_start(scroll_x, text);
-        ui.text_clipped(
-            tx - lead,
-            ty,
-            &todos.input.text[vis..],
-            text,
-            COL_TEXT,
-            max_tx,
-        );
+        // The text, one wrapped line at a time.
+        for n in 0..shown {
+            let seg = &display[wrap.line_start(n)..wrap.line_end(&display, n)];
+            ui.text_clipped(tx, line_y(n), seg, text, COL_TEXT, max_tx);
+        }
 
         // The IME composition (e.g. Hangul jamo merging into a syllable) renders at
         // the caret, underlined, until the IME commits it.
-        if let Some(preedit) = todos.preedit.as_deref() {
-            let px = tx + caret_x - scroll_x;
-            let end = ui.text_clipped(px, ty, preedit, text, COL_TEXT, max_tx);
-            if end > px {
-                let underline_y = ty + line_height(text) - 2.0 * s;
-                ui.line([px, underline_y], [end, underline_y], 1.5, COL_ACCENT);
+        if preedit_len > 0 {
+            for n in 0..shown {
+                let a = caret.max(wrap.line_start(n));
+                let b = (caret + preedit_len).min(wrap.line_end(&display, n));
+                if b > a {
+                    let underline_y = line_y(n) + line_height(text) - 2.0 * s;
+                    ui.line(
+                        [tx + wrap.x_in_line(&display, a, n), underline_y],
+                        [tx + wrap.x_in_line(&display, b, n), underline_y],
+                        1.5,
+                        COL_ACCENT,
+                    );
+                }
             }
         }
     }
-    let caret_x = (tx + todos.input.x_from_byte(todos.input.caret, 0.0, text)
-        - todos.input.scroll_x)
-        .clamp(tx, max_tx - 2.0);
+    // The caret sits just before the composition; on a line past the shown ones it
+    // is simply off screen.
+    let caret_line = wrap.line_of(caret);
+    let caret_x = (tx + wrap.x_at(&display, caret)).clamp(tx, max_tx - 2.0);
     if todos.focused {
         // Where the IME popup should appear, published even while the caret blinks off.
         todos.caret_area = Rect {
             x: caret_x,
-            y: ty,
+            y: line_y(caret_line.min(shown - 1)),
             w: 2.0,
             h: line_height(text),
         };
-        if caret_blinking(todos.caret_since) {
+        if caret_line < shown && caret_blinking(todos.caret_since) {
             ui.rect(
                 Rect {
                     x: caret_x,
-                    y: ty - 3.0 * s,
+                    y: line_y(caret_line) - 3.0 * s,
                     w: 2.0,
                     h: line_height(text) + 6.0 * s,
                 },
@@ -243,7 +272,7 @@ pub(crate) fn draw_ui(
         x: w - pad - add_w,
         y: y0,
         w: add_w,
-        h: row_h,
+        h: field_h,
     };
     let add_clicked = button(
         ui,
@@ -256,7 +285,7 @@ pub(crate) fn draw_ui(
         todos.add_task(save_path);
     }
 
-    let list_top = y0 + row_h + 16.0 * s;
+    let list_top = y0 + field_h + 16.0 * s;
     let list_bottom = h - 48.0 * s;
     let pitch = 46.0 * s;
     let item_h = 40.0 * s;
