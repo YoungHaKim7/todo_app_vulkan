@@ -1,3 +1,6 @@
+# WindowsOS 에서는 이게 젤 좋은데 왜 리눅스랑 틀리지?
+- https://github.com/YoungHaKim7/todo_app_vulkan/commit/38fa5139b51d92633ee4c92e524f3c1398efb66c
+
 # color는 여기서 찾자
 - https://convertingcolors.com/cmyk-color-0.30_0.30_0.00_0.89.html?search=CMYK(0.30,%200.30,%200.00,%200.89)
 
