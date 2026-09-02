@@ -3,9 +3,10 @@
 //! The font is embedded at build time and rasterized once per UI size at startup with
 //! per-pixel anti-aliasing (via `ab_glyph`); [`crate::atlas`] packs the results into a
 //! single texture. Characters the UI font does not cover (Hangul, other scripts) are
-//! rasterized on demand from a system fallback font.
+//! rasterized on demand from a bundled fallback font.
 //!
-//! Font: Hack Nerd Font <https://github.com/ryanoasis/nerd-fonts>, SIL Open Font License 1.1.
+//! Fonts: Hack Nerd Font <https://github.com/ryanoasis/nerd-fonts> and Noto Serif KR
+//! <https://fonts.google.com/noto/specimen/Noto+Serif+KR>, both SIL Open Font License 1.1.
 
 use std::sync::OnceLock;
 
@@ -176,44 +177,46 @@ fn raster_slot<F: ab_glyph::Font>(scaled: &PxScaleFont<&F>, c: char) -> GlyphSlo
     }
 }
 
-/// System fonts tried (in order) as a source for characters the UI font lacks,
-/// mainly Hangul. The `TODO_KOREAN_FONT` environment variable overrides the list.
-const FALLBACK_FONTS: &[&str] = &[
-    "/usr/share/fonts/truetype/NotoSansCJKkr-VF.otf",
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
-    "/usr/share/fonts/truetype/nanumgothic/NanumGothic.ttf",
-    "/usr/share/fonts/TTF/NanumGothic.ttf",
-    "/home/gy/.local/share/fonts/Google/TrueType/Noto Serif KR/Noto_Serif_KR_ExtraLight_VF_[wght].ttf",
-];
+/// Embedded fallback font for characters the UI font lacks, mainly Hangul. Instanced
+/// from the variable font at wght=400 (`fonttools varLib.instancer`); ab_glyph cannot
+/// apply gvar deltas, so the raw variable font would render its thin default weight.
+const FALLBACK_TTF: &[u8] = include_bytes!("../assets/font/NotoSerifKR-Regular.ttf");
 
-/// The loaded fallback font, or `None` when no candidate exists or parses. Candidates
+/// The loaded fallback font, or `None` when no candidate exists or parses. The
+/// `TODO_KOREAN_FONT` environment variable overrides the bundled font; candidates
 /// must actually cover Hangul, so a parsed-but-Latin-only font is skipped.
 pub(crate) fn fallback() -> Option<&'static FontVec> {
     static FONT: OnceLock<Option<FontVec>> = OnceLock::new();
     FONT.get_or_init(|| {
-        let paths = std::env::var_os("TODO_KOREAN_FONT")
-            .into_iter()
-            .map(std::path::PathBuf::from)
-            .chain(FALLBACK_FONTS.iter().map(std::path::PathBuf::from));
-        for path in paths {
-            let Ok(data) = std::fs::read(&path) else {
-                continue;
-            };
-            let Ok(font) = FontVec::try_from_vec(data) else {
-                continue;
-            };
-            // Probe a Hangul syllable: coverage is what matters, not the name.
-            if ab_glyph::Font::glyph_id(&font, '가').0 != 0 {
-                println!("Korean fallback font: {}", path.display());
+        if let Some(path) = std::env::var_os("TODO_KOREAN_FONT") {
+            if let Some(font) = load_hangul_font(&std::path::PathBuf::from(path)) {
                 return Some(font);
             }
         }
-        println!("no Korean fallback font found; Hangul will render blank");
-        None
+        let bundled = FontVec::try_from_vec(FALLBACK_TTF.to_vec())
+            .ok()
+            // Probe a Hangul syllable: coverage is what matters, not the name.
+            .filter(|font| ab_glyph::Font::glyph_id(font, '가').0 != 0);
+        if bundled.is_some() {
+            println!("Korean fallback font: bundled Noto Serif KR");
+        } else {
+            println!("no Korean fallback font found; Hangul will render blank");
+        }
+        bundled
     })
     .as_ref()
+}
+
+/// Reads and parses `path`, returning it only when it covers Hangul.
+fn load_hangul_font(path: &std::path::Path) -> Option<FontVec> {
+    let data = std::fs::read(path).ok()?;
+    let font = FontVec::try_from_vec(data).ok()?;
+    if ab_glyph::Font::glyph_id(&font, '가').0 != 0 {
+        println!("Korean fallback font: {}", path.display());
+        Some(font)
+    } else {
+        None
+    }
 }
 
 /// Rasterizes one character the UI font does not cover, at `size`, from the fallback
@@ -246,6 +249,29 @@ mod tests {
         assert_eq!(char_index('\u{f040}'), Some(98));
         assert_eq!(char_index('\n'), None);
         assert_eq!(char_index('é'), None);
+    }
+
+    #[test]
+    fn bundled_fallback_font_covers_hangul() {
+        let font =
+            FontVec::try_from_vec(FALLBACK_TTF.to_vec()).expect("bundled fallback font is valid");
+        assert_ne!(ab_glyph::Font::glyph_id(&font, '가').0, 0);
+        // The fallback must produce real ink for a Hangul syllable at every UI size,
+        // dark enough to rule out a thin variable-font default instance sneaking back.
+        for &title in &[false, true] {
+            for level in 0..LEVELS {
+                let scaled = PxScaleFont {
+                    font: &font,
+                    scale: PxScale::from(Size { title, level }.px()),
+                };
+                let raster = raster_slot(&scaled, '가')
+                    .raster
+                    .expect("'가' should have a bitmap");
+                assert!(raster.width > 0 && raster.height > 0);
+                let darkest = raster.pixels.iter().copied().max().unwrap();
+                assert!(darkest >= 200, "'가' ink too faint: darkest={darkest}");
+            }
+        }
     }
 
     #[test]
