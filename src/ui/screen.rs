@@ -34,7 +34,7 @@ const LAYOUT_SCALE: [f32; font::LEVELS] = [
 const FIELD_MAX_LINES: usize = 2;
 
 /// The exit prompt's question, and the key hint drawn dim beside it on the same line.
-const QUIT_QUESTION: &str = "Are you really ending it?";
+const QUIT_QUESTION: &str = "Are you sure you want to exit?";
 const QUIT_KEY_HINT: &str = " y / n";
 
 pub(crate) fn draw_ui(
@@ -923,14 +923,18 @@ mod tests {
         assert!(quit.open);
         assert!(!quit.exit);
         let dimmer = ui.verts.chunks(6).any(|chunk| {
-            let (x0, x1) = chunk.iter().map(|v| v.pos[0]).fold(
-                (f32::INFINITY, f32::NEG_INFINITY),
-                |(lo, hi), x| (lo.min(x), hi.max(x)),
-            );
-            let (y0, y1) = chunk.iter().map(|v| v.pos[1]).fold(
-                (f32::INFINITY, f32::NEG_INFINITY),
-                |(lo, hi), y| (lo.min(y), hi.max(y)),
-            );
+            let (x0, x1) = chunk
+                .iter()
+                .map(|v| v.pos[0])
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), x| {
+                    (lo.min(x), hi.max(x))
+                });
+            let (y0, y1) = chunk
+                .iter()
+                .map(|v| v.pos[1])
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), y| {
+                    (lo.min(y), hi.max(y))
+                });
             chunk.iter().all(|v| v.color == COL_OVERLAY)
                 && x0 <= 0.0
                 && y0 <= 0.0
