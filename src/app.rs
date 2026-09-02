@@ -306,7 +306,11 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse = [position.x as f32, position.y as f32];
             }
-            WindowEvent::MouseInput { state, button, .. } if button == MouseButton::Left => {
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
                 match state {
                     ElementState::Pressed => {
                         self.mouse_down = true;

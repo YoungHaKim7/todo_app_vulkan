@@ -37,6 +37,7 @@ const FIELD_MAX_LINES: usize = 2;
 const QUIT_QUESTION: &str = "Are you sure you want to exit?";
 const QUIT_KEY_HINT: &str = " y / n";
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_ui(
     todos: &mut Todos,
     settings: &mut Settings,
@@ -601,6 +602,7 @@ fn quit_layout(w: f32, h: f32, s: f32, title: Size, text: Size) -> (Rect, Rect, 
 /// "Are you really ending it? y / n" — a Y button confirms (latching `exit` for the
 /// event loop) and an N button stays; the y and n keys answer the same way. Clicks
 /// were pre-filtered by the caller: only clicks inside `panel` reach this function.
+#[allow(clippy::too_many_arguments)]
 fn draw_quit_dialog(
     quit: &mut QuitPrompt,
     ui: &mut Ui,
@@ -651,6 +653,7 @@ fn draw_quit_dialog(
 /// The settings window: a dimmer over the main UI, then a bordered panel with a font-size
 /// stepper and a close button. Clicks were pre-filtered by the caller: only clicks inside
 /// `panel` reach this function.
+#[allow(clippy::too_many_arguments)]
 fn draw_settings_window(
     settings: &mut Settings,
     settings_path: &Path,

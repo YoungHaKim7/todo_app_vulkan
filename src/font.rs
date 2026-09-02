@@ -228,10 +228,10 @@ const FALLBACK_TTF: &[u8] = include_bytes!("../assets/font/NotoSerifKR-Regular.t
 pub(crate) fn fallback() -> Option<&'static FontVec> {
     static FONT: OnceLock<Option<FontVec>> = OnceLock::new();
     FONT.get_or_init(|| {
-        if let Some(path) = std::env::var_os("TODO_KOREAN_FONT") {
-            if let Some(font) = load_hangul_font(&std::path::PathBuf::from(path)) {
-                return Some(font);
-            }
+        if let Some(path) = std::env::var_os("TODO_KOREAN_FONT")
+            && let Some(font) = load_hangul_font(&std::path::PathBuf::from(path))
+        {
+            return Some(font);
         }
         let bundled = FontVec::try_from_vec(FALLBACK_TTF.to_vec())
             .ok()
