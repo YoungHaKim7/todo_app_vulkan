@@ -386,7 +386,7 @@ mod tests {
                 // Space advances but never draws; 'M' and the extra glyphs have bitmaps.
                 assert!(quad(size, ' ').is_none());
                 assert!(advance(size, ' ') > 0.0);
-                for c in ['M', 'g', '·', '−', '\u{f013}'] {
+                for c in ['M', 'g', '·', '−', '\u{f013}', '\u{f040}'] {
                     let q = quad(size, c)
                         .unwrap_or_else(|| panic!("missing quad for {c:?} at {size:?}"));
                     assert!(q.w > 0.0 && q.h > 0.0);
@@ -438,11 +438,15 @@ mod tests {
         }
         assert!(ink > 0, "'한' should have solid pixels");
 
-        // Second lookup is a cache hit: no further generation bump. (Other tests in
-        // this binary do not touch '한', so only this lookup can change the count.)
-        let mid = generation();
-        let _ = quad(size, '한');
-        assert_eq!(generation(), mid);
+        // Second lookup is a cache hit: it hands back the very cell the first one
+        // placed. (The generation counter is global and other tests on other threads
+        // bump it with their own glyphs, so the placement is the race-free witness.)
+        let again = quad(size, '한').expect("cached lookup needs a quad");
+        assert_eq!(
+            (again.u, again.v, again.w, again.h),
+            (q.u, q.v, q.w, q.h),
+            "second lookup must reuse the placement, not re-rasterize"
+        );
 
         // A distinct size gets its own entry.
         let other = Size::title(font::DEFAULT_LEVEL);

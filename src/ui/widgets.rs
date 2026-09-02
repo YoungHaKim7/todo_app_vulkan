@@ -5,8 +5,8 @@ use std::time::Instant;
 use super::{Rect, Ui, line_height, text_width};
 use crate::font::Size;
 use crate::ui::theme::{
-    BtnStyle, COL_BORDER, COL_CHECK, COL_DANGER_HOVER, COL_FIELD, COL_PANEL, COL_PANEL_HOVER,
-    COL_TEXT, COL_TEXT_DIM,
+    BtnStyle, COL_ACCENT_HOVER, COL_BORDER, COL_CHECK, COL_DANGER_HOVER, COL_FIELD, COL_PANEL,
+    COL_PANEL_HOVER, COL_TEXT, COL_TEXT_DIM,
 };
 
 pub(crate) fn button(ui: &mut Ui, r: Rect, label: &str, style: &BtnStyle, enabled: bool) -> bool {
@@ -87,6 +87,31 @@ pub(crate) fn delete_button(ui: &mut Ui, r: Rect) -> bool {
     let col = if hot { COL_DANGER_HOVER } else { COL_TEXT_DIM };
     ui.line([c[0] - d, c[1] - d], [c[0] + d, c[1] + d], 2.0, col);
     ui.line([c[0] - d, c[1] + d], [c[0] + d, c[1] - d], 2.0, col);
+    clicked
+}
+
+/// Row edit affordance next to the delete X: the Nerd Font pencil glyph (U+F040) on
+/// a quiet icon button that takes an accent wash on hover — the blue counterpart to
+/// the delete button's red.
+pub(crate) fn edit_button(ui: &mut Ui, r: Rect) -> bool {
+    let hot = ui.hovered(r);
+    if hot {
+        ui.pointer = true;
+    }
+    let clicked = ui.take_click(r);
+    if hot {
+        ui.rect(r, [0.32, 0.62, 1.0, 0.16]);
+    }
+    let size = Size::text(ui.font_level);
+    let icon = "\u{f040}";
+    let col = if hot { COL_ACCENT_HOVER } else { COL_TEXT_DIM };
+    ui.text_at(
+        r.x + (r.w - text_width(icon, size)) * 0.5,
+        r.y + (r.h - line_height(size)) * 0.5,
+        icon,
+        size,
+        col,
+    );
     clicked
 }
 

@@ -4,7 +4,9 @@ use std::{path::Path, time::Instant};
 
 use super::{
     Rect, Ui, line_height, text_width,
-    widgets::{button, caret_blinking, checkbox, delete_button, gear_button, priority_button},
+    widgets::{
+        button, caret_blinking, checkbox, delete_button, edit_button, gear_button, priority_button,
+    },
 };
 use crate::font::{self, Size};
 
@@ -275,10 +277,16 @@ pub(crate) fn draw_ui(
         w: add_w,
         h: field_h,
     };
+    // While a task is being edited the same button commits the edit.
+    let add_label = if todos.editing.is_some() {
+        "Save"
+    } else {
+        "Add"
+    };
     let add_clicked = button(
         ui,
         add_btn,
-        "Add",
+        add_label,
         &BTN_PRIMARY,
         !todos.input.text.trim().is_empty(),
     );
@@ -299,6 +307,9 @@ pub(crate) fn draw_ui(
     let visible = (visible_h / pitch).ceil() as usize + 1;
 
     let mut interacted_elsewhere = false;
+    // A pencil click starts an edit, which lives in the input field — so unlike the
+    // other row clicks it must leave the field focused.
+    let mut edit_started = false;
 
     for i in first..todos.items.len().min(first + visible) {
         let ry = list_top + i as f32 * pitch - todos.scroll;
@@ -360,6 +371,13 @@ pub(crate) fn draw_ui(
             w: 28.0 * s,
             h: 28.0 * s,
         };
+        // The pencil sits just in front of the X; the row's text clips short of it.
+        let edit_btn = Rect {
+            x: del_btn.x - 34.0 * s,
+            y: del_btn.y,
+            w: 28.0 * s,
+            h: 28.0 * s,
+        };
         let text_col = if todos.items[i].done {
             COL_TEXT_DIM
         } else {
@@ -371,7 +389,7 @@ pub(crate) fn draw_ui(
             &todos.items[i].text,
             text,
             text_col,
-            del_btn.x - 14.0 * s,
+            edit_btn.x - 14.0 * s,
         );
         if todos.items[i].done && tw > text_x {
             ui.line(
@@ -380,6 +398,13 @@ pub(crate) fn draw_ui(
                 2.0,
                 COL_TEXT_DIM,
             );
+        }
+        if edit_button(ui, edit_btn) {
+            // The task lifts into the input field and its row leaves the list until
+            // the edit commits or cancels, so the loop stops like a delete's.
+            todos.begin_edit(i);
+            edit_started = true;
+            break;
         }
         if delete_button(ui, del_btn) {
             todos.items.remove(i);
@@ -428,7 +453,7 @@ pub(crate) fn draw_ui(
         );
     }
 
-    let hint = "Enter: add · click stripe: priority · Esc: quit";
+    let hint = "Enter: add/save · stripe: priority · Esc: quit";
     ui.text_at(pad, h - 36.0 * s, hint, text, COL_TEXT_DIM);
 
     let done_n = todos.done_count();
@@ -455,7 +480,8 @@ pub(crate) fn draw_ui(
         }
         ui.clicks.clear();
     }
-    let focused = field_clicked || add_clicked || (was_focused && !interacted_elsewhere);
+    let focused =
+        field_clicked || add_clicked || edit_started || (was_focused && !interacted_elsewhere);
     if focused {
         todos.focused = true;
     } else if todos.focused {

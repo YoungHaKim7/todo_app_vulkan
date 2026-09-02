@@ -54,7 +54,7 @@ impl App {
     pub(crate) fn new(event_loop: &EventLoop<()>) -> Self {
         println!("Vulkan ToDo");
         println!(
-            "Controls: type + Enter = add task · click/drag in the input = caret/selection · Ctrl+A/C/X/V · Ctrl+Backspace = delete word · click checkbox = toggle · click a row's color stripe = cycle priority (red on top, yellow next, gray last) · X = delete · scroll = move list · settings: gear (top left) · Esc: close window / quit"
+            "Controls: type + Enter = add task · click/drag in the input = caret/selection · Ctrl+A/C/X/V · Ctrl+Backspace = delete word · click checkbox = toggle · click a row's color stripe = cycle priority (red on top, yellow next, gray last) · X = delete · pencil = edit its text (Enter/Add saves, Esc cancels) · scroll = move list · settings: gear (top left) · Esc: close window / quit"
         );
 
         let gpu = GpuContext::new(event_loop);
@@ -302,6 +302,9 @@ impl ApplicationHandler for App {
                     if event.state == ElementState::Pressed {
                         if self.settings.open {
                             self.settings.open = false;
+                        } else if self.todos.editing.is_some() {
+                            // An edit in progress unwinds before Esc may quit.
+                            self.todos.cancel_edit();
                         } else {
                             event_loop.exit();
                         }
@@ -362,6 +365,11 @@ impl ApplicationHandler for App {
             }
             if let Ok(preedit) = std::env::var("TODO_PREEDIT") {
                 self.todos.preedit = (!preedit.is_empty()).then_some(preedit);
+            }
+            // Lifts a task into the field (by list index) so the editing visuals —
+            // the Save button, the row gone from the list — render headlessly.
+            if let Some(i) = std::env::var("TODO_EDIT").ok().and_then(|v| v.parse().ok()) {
+                self.todos.begin_edit(i);
             }
             self.dump_frame(&path.to_string_lossy());
             event_loop.exit();

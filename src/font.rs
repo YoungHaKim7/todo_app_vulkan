@@ -61,17 +61,19 @@ impl Size {
 }
 
 /// Number of characters in [`charset`].
-pub(crate) const CHARSET_LEN: usize = 98;
+pub(crate) const CHARSET_LEN: usize = 99;
 
 /// Characters covered by the atlas: printable ASCII, the middle dot used in hints, the
-/// true minus sign used by the font-size buttons, and the Nerd Font gear icon
-/// (U+F013; U+2699 is not covered by the font).
+/// true minus sign used by the font-size buttons, and the Nerd Font icons used by
+/// buttons (the gear U+F013 and the pencil U+F040; their plain-Unicode counterparts
+/// are not covered by the font).
 pub(crate) fn charset() -> impl Iterator<Item = char> {
     (32u8..=126)
         .map(|b| b as char)
         .chain(std::iter::once('·'))
         .chain(std::iter::once('−'))
         .chain(std::iter::once('\u{f013}'))
+        .chain(std::iter::once('\u{f040}'))
 }
 
 /// Maps a character to its slot index, or `None` if the font does not cover it.
@@ -81,6 +83,7 @@ pub(crate) fn char_index(c: char) -> Option<usize> {
         '·' => Some(95),
         '−' => Some(96),
         '\u{f013}' => Some(97),
+        '\u{f040}' => Some(98),
         _ => None,
     }
 }
@@ -240,6 +243,7 @@ mod tests {
         assert_eq!(char_index('·'), Some(95));
         assert_eq!(char_index('−'), Some(96));
         assert_eq!(char_index('\u{f013}'), Some(97));
+        assert_eq!(char_index('\u{f040}'), Some(98));
         assert_eq!(char_index('\n'), None);
         assert_eq!(char_index('é'), None);
     }
@@ -279,13 +283,15 @@ mod tests {
                 r.slots[char_index(' ').unwrap()].raster.is_none(),
                 "space should have no bitmap"
             );
-            assert!(
-                r.slots[char_index('\u{f013}').unwrap()]
-                    .raster
-                    .as_ref()
-                    .is_some_and(|g| g.width > 0 && g.height > 0),
-                "gear icon should have a bitmap"
-            );
+            for icon in ['\u{f013}', '\u{f040}'] {
+                assert!(
+                    r.slots[char_index(icon).unwrap()]
+                        .raster
+                        .as_ref()
+                        .is_some_and(|g| g.width > 0 && g.height > 0),
+                    "{icon:?} icon should have a bitmap"
+                );
+            }
 
             let m = r.slots[char_index('M').unwrap()].raster.as_ref().unwrap();
             assert!(m.width > 0 && m.height > 0);

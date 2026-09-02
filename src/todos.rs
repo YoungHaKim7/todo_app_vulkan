@@ -120,6 +120,10 @@ pub(crate) struct Todos {
     /// The caret's rect on screen from the last drawn frame, so the IME popup can be
     /// positioned at it between frames.
     pub(crate) caret_area: Rect,
+    /// The task lifted out of the list into the input field for editing, if any. It
+    /// returns — done flag and priority intact — when the input is committed (Enter
+    /// or the Add/Save button) or the edit is cancelled (Esc).
+    pub(crate) editing: Option<Todo>,
 }
 
 impl Todos {
@@ -152,13 +156,17 @@ impl Todos {
                 w: 0.0,
                 h: 0.0,
             },
+            editing: None,
         }
     }
 
     pub(crate) fn save(&self, path: &Path) {
+        // A task lifted into the input field for editing stays in the file with its
+        // pre-edit text, so a save for an unrelated change cannot drop it.
         let body: String = self
             .items
             .iter()
+            .chain(self.editing.iter())
             .map(|t| encode_save_line(t) + "\n")
             .collect();
         let _ = fs::write(path, body);
@@ -166,21 +174,67 @@ impl Todos {
 
     pub(crate) fn add_task(&mut self, path: &Path) {
         let text = self.input.text.trim().to_string();
-        if text.is_empty() {
+        if self.editing.is_none() && text.is_empty() {
             return;
         }
-        // New tasks enter as gray; the sort below is a no-op placement-wise (gray
-        // sorts last) but keeps the ordering invariant explicit.
-        self.items.push(Todo {
-            text,
-            done: false,
-            priority: Priority::Low,
-        });
+        let todo = match self.editing.take() {
+            // Committing an edit writes the field's text back into the lifted-out
+            // task, whose done flag and priority ride along untouched; an empty
+            // field hands it back unchanged (a cancel).
+            Some(mut edited) => {
+                if !text.is_empty() {
+                    edited.text = text;
+                }
+                edited
+            }
+            // New tasks enter as gray; the sort below is a no-op placement-wise (gray
+            // sorts last) but keeps the ordering invariant explicit.
+            None => Todo {
+                text,
+                done: false,
+                priority: Priority::Low,
+            },
+        };
+        self.items.push(todo);
         sort_by_priority(&mut self.items);
         self.input.clear();
         self.caret_since = Instant::now();
         self.preedit = None;
         self.save(path);
+    }
+
+    /// Lifts a task out of the list into the input field for editing: the field takes
+    /// its text with the caret at the end and grabs focus. A task already being edited
+    /// returns unchanged — pushed back after the removal, so `i` keeps pointing at the
+    /// row this click hit.
+    pub(crate) fn begin_edit(&mut self, i: usize) {
+        if i >= self.items.len() {
+            return;
+        }
+        let todo = self.items.remove(i);
+        if let Some(prev) = self.editing.take() {
+            self.items.push(prev);
+            sort_by_priority(&mut self.items);
+        }
+        self.input.clear();
+        self.input.insert_str(&todo.text);
+        self.editing = Some(todo);
+        self.focused = true;
+        self.caret_since = Instant::now();
+        self.preedit = None;
+    }
+
+    /// Returns the task being edited to the list unchanged and empties the field: the
+    /// undo for a pencil click. No save is needed — the file still lists the task with
+    /// its pre-edit text throughout the edit.
+    pub(crate) fn cancel_edit(&mut self) {
+        if let Some(todo) = self.editing.take() {
+            self.items.push(todo);
+            sort_by_priority(&mut self.items);
+            self.input.clear();
+            self.caret_since = Instant::now();
+            self.preedit = None;
+        }
     }
 
     /// Advances the stripe-clicked task's priority (gray → yellow → red → gray)
@@ -253,6 +307,7 @@ mod tests {
                 w: 0.0,
                 h: 0.0,
             },
+            editing: None,
         };
         todos.input.insert_str("hello");
         todos.input.select_all();
@@ -351,6 +406,110 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
+    #[test]
+    fn edit_round_trips_through_the_input_field() {
+        let path =
+            std::env::temp_dir().join(format!("vulkan_todo_edit_{}.txt", std::process::id()));
+        let mut todos = with_items(vec![
+            todo("red!", false, Priority::High),
+            todo("buy milk", false, Priority::Low),
+        ]);
+        todos.begin_edit(1);
+        assert_eq!(
+            todos.items.len(),
+            1,
+            "the edited task lifts out of the list"
+        );
+        assert_eq!(todos.items[0].text, "red!");
+        assert_eq!(todos.input.text, "buy milk");
+        assert_eq!(
+            todos.input.caret,
+            "buy milk".len(),
+            "the caret starts at the end"
+        );
+        assert!(todos.focused, "editing grabs focus for the field");
+        assert_eq!(
+            todos.editing.as_ref().map(|t| t.priority),
+            Some(Priority::Low)
+        );
+        // A save while the edit is pending still keeps the task on disk.
+        todos.save(&path);
+        assert_eq!(Todos::load(&path).items.len(), 2);
+
+        todos.input.select_all();
+        todos.input.insert_str("buy oat milk");
+        todos.add_task(&path);
+        assert!(todos.editing.is_none());
+        assert!(todos.input.text.is_empty(), "committing clears the field");
+        let texts: Vec<&str> = todos.items.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            ["red!", "buy oat milk"],
+            "the task returns in its place"
+        );
+        // The edited text survived the save/load roundtrip.
+        assert_eq!(Todos::load(&path).items[1].text, "buy oat milk");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn cancel_and_empty_commit_restore_the_task() {
+        let mut todos = with_items(vec![
+            todo("done thing", true, Priority::Low),
+            todo("red!", false, Priority::High),
+        ]);
+        todos.begin_edit(0);
+        todos.cancel_edit();
+        assert_eq!(todos.items.len(), 2);
+        assert!(todos.items[1].done, "cancel keeps the done flag");
+        assert!(todos.items[1].text == "done thing");
+        assert!(todos.input.text.is_empty());
+        assert!(todos.editing.is_none());
+
+        // Committing with an empty field cancels the edit the same way.
+        todos.begin_edit(0);
+        todos.input.clear();
+        todos.add_task(Path::new("/dev/null"));
+        assert_eq!(todos.items.len(), 2);
+        assert_eq!(todos.items[1].text, "done thing");
+        assert!(
+            todos.items[1].done,
+            "an empty commit keeps the done flag too"
+        );
+    }
+
+    #[test]
+    fn commit_keeps_done_flag_and_priority() {
+        let mut todos = with_items(vec![
+            todo("ship release 1.0!", true, Priority::High),
+            todo("buy milk", false, Priority::Low),
+        ]);
+        todos.begin_edit(0);
+        todos.input.select_all();
+        todos.input.insert_str("ship release 1.1!");
+        todos.add_task(Path::new("/dev/null"));
+        assert_eq!(todos.items[0].text, "ship release 1.1!");
+        assert!(todos.items[0].done, "the done flag rides along");
+        assert_eq!(
+            todos.items[0].priority,
+            Priority::High,
+            "so does the priority"
+        );
+    }
+
+    #[test]
+    fn editing_another_task_returns_the_first_unchanged() {
+        let mut todos = with_items(vec![
+            todo("gray a", false, Priority::Low),
+            todo("gray b", false, Priority::Low),
+        ]);
+        todos.begin_edit(0); // lifts "gray a"
+        todos.begin_edit(0); // lifts "gray b"; "gray a" goes back unchanged
+        assert_eq!(todos.items.len(), 1);
+        assert_eq!(todos.items[0].text, "gray a");
+        assert_eq!(todos.editing.as_ref().unwrap().text, "gray b");
+    }
+
     fn todo(text: &str, done: bool, priority: Priority) -> Todo {
         Todo {
             text: text.into(),
@@ -382,6 +541,7 @@ mod tests {
                 w: 0.0,
                 h: 0.0,
             },
+            editing: None,
         }
     }
 }
