@@ -23,12 +23,23 @@ use crate::{
 const SAVE_FILE: &str = "todos.txt";
 const SETTINGS_FILE: &str = "settings.txt";
 
+/// The Esc exit prompt. `open` shows the centered "really ending it?" dialog; `exit`
+/// latches when the user confirms via the Y button so the event loop — which draws
+/// the dialog but cannot be stopped from inside it — shuts down right after that
+/// frame. The y key confirms straight from the event handler instead.
+pub(crate) struct QuitPrompt {
+    pub(crate) open: bool,
+    pub(crate) exit: bool,
+}
+
 pub(crate) struct App {
     pub(crate) gpu: GpuContext,
     pub(crate) todos: Todos,
     pub(crate) save_path: PathBuf,
     pub(crate) settings: Settings,
     pub(crate) settings_path: PathBuf,
+    /// The Esc exit prompt's state (see [`QuitPrompt`]).
+    pub(crate) quit: QuitPrompt,
     pub(crate) mouse: [f32; 2],
     pub(crate) pending_clicks: Vec<[f32; 2]>,
     /// Whether the left button is held, and where that press started; the UI uses
@@ -54,7 +65,7 @@ impl App {
     pub(crate) fn new(event_loop: &EventLoop<()>) -> Self {
         println!("Vulkan ToDo");
         println!(
-            "Controls: type + Enter = add task · click/drag in the input = caret/selection · Ctrl+A/C/X/V · Ctrl+Backspace = delete word · click checkbox = toggle · click a row's color stripe = cycle priority (red on top, yellow next, gray last) · X = delete · pencil = edit its text (Enter/Add saves, Esc cancels) · scroll = move list · settings: gear (top left) · Esc: close window / quit"
+            "Controls: type + Enter = add task · click/drag in the input = caret/selection · Ctrl+A/C/X/V · Ctrl+Backspace = delete word · click checkbox = toggle · click a row's color stripe = cycle priority (red on top, yellow next, gray last) · X = delete · pencil = edit its text (Enter/Add saves, Esc cancels) · scroll = move list · settings: gear (top left) · Esc: ask to quit (y = yes, n / Esc = no)"
         );
 
         let gpu = GpuContext::new(event_loop);
@@ -77,6 +88,10 @@ impl App {
             save_path,
             settings,
             settings_path,
+            quit: QuitPrompt {
+                open: false,
+                exit: false,
+            },
             mouse: [-1000.0; 2],
             pending_clicks: Vec::new(),
             mouse_down: false,
@@ -154,7 +169,7 @@ impl App {
     /// IME events: Hangul (and other script) composition via fcitx5/ibus. `Preedit`
     /// shows the text being composed at the caret; `Commit` types the finished text.
     fn handle_ime(&mut self, ime: Ime) {
-        if self.settings.open || !self.todos.focused {
+        if self.settings.open || self.quit.open || !self.todos.focused {
             self.todos.preedit = None;
             return;
         }
@@ -171,7 +186,7 @@ impl App {
     /// Attaches or detaches the platform IME as the input field gains or loses focus,
     /// and keeps the composition popup anchored at the caret.
     fn sync_ime(&mut self, window: &Window) {
-        let wanted = self.todos.focused && !self.settings.open;
+        let wanted = self.todos.focused && !self.settings.open && !self.quit.open;
         if wanted != self.ime_on {
             window.set_ime_allowed(wanted);
             self.ime_on = wanted;
@@ -298,7 +313,10 @@ impl ApplicationHandler for App {
                         self.press = self.mouse;
                         // Focusing on press (not just release) means the caret and
                         // drag selection are visible while the button is held.
-                        if !self.settings.open && self.todos.field_rect.contains(self.mouse) {
+                        if !self.settings.open
+                            && !self.quit.open
+                            && self.todos.field_rect.contains(self.mouse)
+                        {
                             self.todos.focused = true;
                         }
                     }
@@ -314,7 +332,7 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
                 };
-                if !self.settings.open {
+                if !self.settings.open && !self.quit.open {
                     self.todos.scroll =
                         (self.todos.scroll - lines * 40.0).clamp(0.0, self.todos.max_scroll);
                 }
@@ -327,8 +345,29 @@ impl ApplicationHandler for App {
                         } else if self.todos.editing.is_some() {
                             // An edit in progress unwinds before Esc may quit.
                             self.todos.cancel_edit();
+                        } else if self.quit.open {
+                            // A second Esc backs out of the prompt instead of
+                            // confirming it.
+                            self.quit.open = false;
                         } else {
-                            event_loop.exit();
+                            // Esc alone no longer quits: it asks first.
+                            self.quit.open = true;
+                        }
+                    }
+                } else if self.quit.open {
+                    // The prompt owns the keyboard while it is up: y confirms and
+                    // quits, n dismisses, and anything else is swallowed rather
+                    // than typed into the field behind it.
+                    if event.state == ElementState::Pressed
+                        && let Key::Character(text) = event.logical_key
+                    {
+                        match text.to_lowercase().as_str() {
+                            "y" => {
+                                self.quit.open = false;
+                                event_loop.exit();
+                            }
+                            "n" => self.quit.open = false,
+                            _ => {}
                         }
                     }
                 } else {
@@ -353,6 +392,10 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 self.redraw();
+                // The prompt's Y button latched `exit` while the frame was drawn.
+                if self.quit.exit {
+                    event_loop.exit();
+                }
             }
             _ => {}
         }
@@ -382,6 +425,9 @@ impl ApplicationHandler for App {
             }
             if std::env::var_os("TODO_SETTINGS_OPEN").is_some() {
                 self.settings.open = true;
+            }
+            if std::env::var_os("TODO_QUIT_OPEN").is_some() {
+                self.quit.open = true;
             }
             // Seed the input field (focused) so editing visuals can be rendered
             // headlessly; TODO_INPUT_SELECT additionally selects everything, and

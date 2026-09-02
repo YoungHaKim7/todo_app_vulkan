@@ -605,6 +605,7 @@ impl App {
         draw_ui(
             &mut self.todos,
             &mut self.settings,
+            &mut self.quit,
             &self.save_path,
             &self.settings_path,
             &mut ui,
@@ -749,6 +750,7 @@ impl App {
         draw_ui(
             &mut self.todos,
             &mut self.settings,
+            &mut self.quit,
             &self.save_path,
             &self.settings_path,
             &mut ui,

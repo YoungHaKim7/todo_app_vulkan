@@ -11,6 +11,7 @@ use super::{
 use crate::font::{self, Size};
 
 use crate::{
+    app::QuitPrompt,
     input::Wrap,
     settings::Settings,
     todos::{Priority, Todos},
@@ -32,9 +33,14 @@ const LAYOUT_SCALE: [f32; font::LEVELS] = [
 /// bottom of the field instead of scrolling.
 const FIELD_MAX_LINES: usize = 2;
 
+/// The exit prompt's question, and the key hint drawn dim beside it on the same line.
+const QUIT_QUESTION: &str = "Are you really ending it?";
+const QUIT_KEY_HINT: &str = " y / n";
+
 pub(crate) fn draw_ui(
     todos: &mut Todos,
     settings: &mut Settings,
+    quit: &mut QuitPrompt,
     save_path: &Path,
     settings_path: &Path,
     ui: &mut Ui,
@@ -49,9 +55,9 @@ pub(crate) fn draw_ui(
     let text = Size::text(settings.font_level);
     let title = Size::title(settings.font_level);
 
-    // While the settings window is open it owns all input: hold this frame's clicks back
-    // from the main UI and hand them to the window after it is drawn.
-    let modal_was_open = settings.open;
+    // While the settings window or the exit prompt is open it owns all input: hold this
+    // frame's clicks back from the main UI and hand them to the modal after it is drawn.
+    let modal_was_open = settings.open || quit.open;
     let held_clicks = if modal_was_open {
         std::mem::take(&mut ui.clicks)
     } else {
@@ -509,17 +515,29 @@ pub(crate) fn draw_ui(
     }
 
     if modal_was_open {
-        // The settings window owns input while open; nothing underneath keeps focus or
-        // shows a pointer cursor through the dimmer.
+        // A modal owns input while open; nothing underneath keeps focus or shows a
+        // pointer cursor through the dimmer. Only one can be open at a time: while a
+        // modal holds the clicks, neither the gear nor Esc can open the other.
         todos.blur();
         ui.pointer = false;
 
-        let panel = settings_panel(w, h, s);
-        if held_clicks.iter().any(|p| !panel.contains(*p)) {
-            settings.open = false;
+        if settings.open {
+            let panel = settings_panel(w, h, s);
+            if held_clicks.iter().any(|p| !panel.contains(*p)) {
+                settings.open = false;
+            } else {
+                ui.clicks = held_clicks;
+                draw_settings_window(settings, settings_path, ui, w, h, &panel, s, text, title);
+            }
         } else {
-            ui.clicks = held_clicks;
-            draw_settings_window(settings, settings_path, ui, w, h, &panel, s, text, title);
+            let (panel, yes, no) = quit_layout(w, h, s, title, text);
+            if held_clicks.iter().any(|p| !panel.contains(*p)) {
+                // A release on the dimmer counts as answering "no".
+                quit.open = false;
+            } else {
+                ui.clicks = held_clicks;
+                draw_quit_dialog(quit, ui, w, h, &panel, yes, no, s, text, title);
+            }
         }
     }
 }
@@ -542,6 +560,91 @@ fn settings_panel(w: f32, h: f32, s: f32) -> Rect {
         y: (h - ph) * 0.5,
         w: pw,
         h: ph,
+    }
+}
+
+/// Panel and button rects for the Esc exit prompt, centered. The panel is sized to
+/// the question at the current font level (with a floor so the buttons always fit),
+/// so every level keeps the text inside the border.
+fn quit_layout(w: f32, h: f32, s: f32, title: Size, text: Size) -> (Rect, Rect, Rect) {
+    let pad_in = 24.0 * s;
+    let btn_w = 64.0 * s;
+    let btn_h = 34.0 * s;
+    let btn_gap = 12.0 * s;
+    let content_w = (text_width(QUIT_QUESTION, title) + text_width(QUIT_KEY_HINT, text))
+        .max(2.0 * btn_w + btn_gap);
+    let pw = (content_w + 2.0 * pad_in).min(w - 24.0);
+    let ph = (20.0 * s + line_height(title) + 20.0 * s + btn_h + 20.0 * s).min(h - 24.0);
+    let panel = Rect {
+        x: (w - pw) * 0.5,
+        y: (h - ph) * 0.5,
+        w: pw,
+        h: ph,
+    };
+    let by = panel.y + panel.h - 20.0 * s - btn_h;
+    let yes = Rect {
+        x: panel.x + (pw - 2.0 * btn_w - btn_gap) * 0.5,
+        y: by,
+        w: btn_w,
+        h: btn_h,
+    };
+    let no = Rect {
+        x: yes.x + btn_w + btn_gap,
+        y: by,
+        w: btn_w,
+        h: btn_h,
+    };
+    (panel, yes, no)
+}
+
+/// The Esc exit prompt: a dimmer over the main UI, then a small bordered panel asking
+/// "Are you really ending it? y / n" — a Y button confirms (latching `exit` for the
+/// event loop) and an N button stays; the y and n keys answer the same way. Clicks
+/// were pre-filtered by the caller: only clicks inside `panel` reach this function.
+fn draw_quit_dialog(
+    quit: &mut QuitPrompt,
+    ui: &mut Ui,
+    w: f32,
+    h: f32,
+    panel: &Rect,
+    yes: Rect,
+    no: Rect,
+    s: f32,
+    text: Size,
+    title: Size,
+) {
+    // Dim the whole screen behind the window, then the window itself.
+    ui.rect(
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w,
+            h,
+        },
+        COL_OVERLAY,
+    );
+    ui.rect(*panel, COL_BORDER);
+    ui.rect(panel.inset(1.5), COL_PANEL);
+
+    // The question with the key hint beside it, dimmer, baselines aligned.
+    let total = text_width(QUIT_QUESTION, title) + text_width(QUIT_KEY_HINT, text);
+    let qx = panel.x + (panel.w - total) * 0.5;
+    let qy = panel.y + 20.0 * s;
+    let qw = ui.text_at(qx, qy, QUIT_QUESTION, title, COL_TEXT);
+    ui.text_at(
+        qx + qw,
+        qy + ascent(title) - ascent(text),
+        QUIT_KEY_HINT,
+        text,
+        COL_TEXT_DIM,
+    );
+
+    if button(ui, yes, "Y", &BTN_PRIMARY, true) {
+        quit.exit = true;
+        quit.open = false;
+    }
+    if button(ui, no, "N", &BTN_GHOST, true) {
+        quit.open = false;
     }
 }
 
@@ -677,6 +780,10 @@ mod tests {
         draw_ui(
             &mut todos,
             &mut settings,
+            &mut QuitPrompt {
+                open: false,
+                exit: false,
+            },
             Path::new("/nonexistent-test-todos.txt"),
             Path::new("/nonexistent-test-settings.txt"),
             &mut ui,
@@ -742,5 +849,94 @@ mod tests {
             gap < 0.1 * old_gap,
             "inter-line gap {gap:.2}px must be under 10% of the old {old_gap:.2}px whitespace"
         );
+    }
+
+    /// The exit prompt answers by click: Y latches `exit` (and closes), N and a
+    /// release on the dimmer outside the panel just close, and a frame with no
+    /// clicks leaves it open with the whole-window dimmer actually drawn.
+    #[test]
+    fn quit_prompt_answers_by_button_and_dimmer() {
+        let font_level = 9;
+        let (w, h) = (940.0, 640.0);
+        let (_, yes, no) = quit_layout(
+            w,
+            h,
+            LAYOUT_SCALE[font_level],
+            Size::title(font_level),
+            Size::text(font_level),
+        );
+        let center = |r: Rect| [r.x + r.w * 0.5, r.y + r.h * 0.5];
+
+        for (click, want_exit) in [
+            (center(yes), true),
+            (center(no), false),
+            ([8.0, 8.0], false), // on the dimmer, outside the panel
+        ] {
+            let mut todos = Todos::load(Path::new("/nonexistent-test-todos.txt"));
+            let mut settings = Settings {
+                open: false,
+                font_level,
+                window_size: None,
+            };
+            let mut quit = QuitPrompt {
+                open: true,
+                exit: false,
+            };
+            let mut ui = Ui::new([-1.0, -1.0]);
+            ui.clicks.push(click);
+            draw_ui(
+                &mut todos,
+                &mut settings,
+                &mut quit,
+                Path::new("/nonexistent-test-todos.txt"),
+                Path::new("/nonexistent-test-settings.txt"),
+                &mut ui,
+                w,
+                h,
+            );
+            assert_eq!(quit.exit, want_exit, "click at {click:?}");
+            assert!(!quit.open, "click at {click:?} must close the prompt");
+        }
+
+        // No clicks: the prompt stays open and its dimmer covers the screen.
+        let mut todos = Todos::load(Path::new("/nonexistent-test-todos.txt"));
+        let mut settings = Settings {
+            open: false,
+            font_level,
+            window_size: None,
+        };
+        let mut quit = QuitPrompt {
+            open: true,
+            exit: false,
+        };
+        let mut ui = Ui::new([-1.0, -1.0]);
+        draw_ui(
+            &mut todos,
+            &mut settings,
+            &mut quit,
+            Path::new("/nonexistent-test-todos.txt"),
+            Path::new("/nonexistent-test-settings.txt"),
+            &mut ui,
+            w,
+            h,
+        );
+        assert!(quit.open);
+        assert!(!quit.exit);
+        let dimmer = ui.verts.chunks(6).any(|chunk| {
+            let (x0, x1) = chunk.iter().map(|v| v.pos[0]).fold(
+                (f32::INFINITY, f32::NEG_INFINITY),
+                |(lo, hi), x| (lo.min(x), hi.max(x)),
+            );
+            let (y0, y1) = chunk.iter().map(|v| v.pos[1]).fold(
+                (f32::INFINITY, f32::NEG_INFINITY),
+                |(lo, hi), y| (lo.min(y), hi.max(y)),
+            );
+            chunk.iter().all(|v| v.color == COL_OVERLAY)
+                && x0 <= 0.0
+                && y0 <= 0.0
+                && x1 >= w
+                && y1 >= h
+        });
+        assert!(dimmer, "a full-window overlay quad must be drawn");
     }
 }
