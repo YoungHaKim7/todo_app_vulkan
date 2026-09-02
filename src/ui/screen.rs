@@ -23,7 +23,10 @@ use crate::{
 
 /// How far the layout stretches per font level, relative to the default level. Glyphs grow
 /// a little faster than this so bigger text also packs slightly more densely.
-const LAYOUT_SCALE: [f32; font::LEVELS] = [0.86, 0.93, 1.0, 1.16, 1.32];
+const LAYOUT_SCALE: [f32; font::LEVELS] = [
+    0.37, 0.44, 0.51, 0.58, 0.65, 0.72, 0.79, 0.86, 0.93, 1.0, 1.08, 1.16, 1.24, 1.32, 1.40, 1.48,
+    1.56, 1.64, 1.72, 1.80,
+];
 
 /// How many wrapped lines the input field shows; anything past them runs off the
 /// bottom of the field instead of scrolling.
@@ -453,9 +456,6 @@ pub(crate) fn draw_ui(
         );
     }
 
-    let hint = "Enter: add/save · stripe: priority · Esc: quit";
-    ui.text_at(pad, h - 36.0 * s, hint, text, COL_TEXT_DIM);
-
     let done_n = todos.done_count();
     let clear_label = format!("Clear completed ({})", done_n);
     let clear_w = text_width(&clear_label, text) + 24.0 * s;
@@ -465,6 +465,19 @@ pub(crate) fn draw_ui(
         w: clear_w,
         h: 30.0 * s,
     };
+
+    // The hint gives way to the clear button: at large font sizes the two no longer
+    // fit side by side, so it clips short of the button instead of running under it.
+    let hint = "Enter: add/save · stripe: priority · Esc: quit";
+    ui.text_clipped(
+        pad,
+        h - 36.0 * s,
+        hint,
+        text,
+        COL_TEXT_DIM,
+        clear_btn.x - 12.0 * s,
+    );
+
     if button(ui, clear_btn, &clear_label, &BTN_GHOST, done_n > 0) {
         todos.items.retain(|t| !t.done);
         todos.save(save_path);

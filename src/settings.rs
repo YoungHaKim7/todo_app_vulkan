@@ -7,6 +7,18 @@ use std::{fs, path::Path};
 
 use crate::font::{DEFAULT_LEVEL, LEVELS};
 
+/// Settings-file format version, written as a `v=` line. Files without the line are
+/// the original format; each version bumped the font-level scheme, so older files
+/// are migrated to the current one on load.
+const FORMAT_VERSION: usize = 3;
+
+/// Maps the five font steps of the version-1 format to the current twenty-step
+/// scheme by pixel size (v1 steps were 16/18/20/24/28 px of text).
+const V1_LEVEL_MAP: [usize; 5] = [7, 8, 9, 11, 13];
+/// Offset from a version-2 font level (eleven steps, 10..30 px of text) to the
+/// current scheme, which keeps those sizes as levels 4..14.
+const V2_LEVEL_OFFSET: usize = 4;
+
 pub(crate) struct Settings {
     /// Whether the settings window is currently open.
     pub(crate) open: bool,
@@ -21,14 +33,23 @@ pub(crate) struct Settings {
 impl Settings {
     pub(crate) fn load(path: &Path) -> Self {
         let data = fs::read_to_string(path).unwrap_or_default();
+        let version = data
+            .lines()
+            .find_map(|line| line.strip_prefix("v=")?.trim().parse::<usize>().ok());
         let font_level = data
             .lines()
             .find_map(|line| {
                 let value = line.strip_prefix("font=")?;
                 value.trim().parse::<usize>().ok()
             })
-            .unwrap_or(DEFAULT_LEVEL)
-            .min(LEVELS - 1);
+            .map(|level| match version {
+                // Older files are re-indexed into the current scheme by pixel size:
+                // v1 stored one of five steps, v2 one of eleven.
+                None => V1_LEVEL_MAP[level.min(V1_LEVEL_MAP.len() - 1)],
+                Some(2) => level.min(10) + V2_LEVEL_OFFSET,
+                Some(_) => level.min(LEVELS - 1),
+            })
+            .unwrap_or(DEFAULT_LEVEL);
         let window_size = data.lines().find_map(|line| {
             let value = line.strip_prefix("window=")?;
             let (w, h) = value.trim().split_once('x')?;
@@ -43,7 +64,7 @@ impl Settings {
     }
 
     pub(crate) fn save(&self, path: &Path) {
-        let mut data = format!("font={}\n", self.font_level);
+        let mut data = format!("v={FORMAT_VERSION}\nfont={}\n", self.font_level);
         if let Some([w, h]) = self.window_size {
             data.push_str(&format!("window={w}x{h}\n"));
         }
@@ -97,6 +118,33 @@ mod tests {
         assert_eq!(loaded.font_level, 1);
         assert_eq!(loaded.window_size, Some([1280, 800]));
         assert!(!loaded.open, "open state must not persist");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn old_format_font_level_is_remapped() {
+        let path = temp_path("migrate");
+        // No `v=` line: a v1 file. Level 4 was 28 px of text, which is level 13 now.
+        fs::write(&path, "font=4\nwindow=640x480\n").unwrap();
+        let settings = Settings::load(&path);
+        assert_eq!(settings.font_level, 13);
+        assert_eq!(settings.window_size, Some([640, 480]));
+        // An out-of-range v1 level clamps into the mapping table, as v1 saves did.
+        fs::write(&path, "font=99\n").unwrap();
+        assert_eq!(Settings::load(&path).font_level, V1_LEVEL_MAP[4]);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn v2_format_font_level_is_remapped() {
+        let path = temp_path("migrate_v2");
+        // A v2 file's level 4 was 18 px of text; in the twenty-step scheme that is 8.
+        fs::write(&path, "v=2\nfont=4\n").unwrap();
+        assert_eq!(Settings::load(&path).font_level, 8);
+        // Out-of-range v2 levels clamp to the v2 maximum before the offset, as v2
+        // saves did.
+        fs::write(&path, "v=2\nfont=99\n").unwrap();
+        assert_eq!(Settings::load(&path).font_level, 10 + V2_LEVEL_OFFSET);
         let _ = fs::remove_file(&path);
     }
 

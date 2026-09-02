@@ -17,14 +17,22 @@ pub(crate) const TTF: &[u8] = include_bytes!("../assets/font/HackNerdFont-Regula
 // pub(crate) const TTF: &[u8] = include_bytes!("../assets/font/NotoSerifKR-VariableFont_wght.ttf");
 
 /// Number of font-size steps the user can choose between in the settings window.
-pub(crate) const LEVELS: usize = 5;
+pub(crate) const LEVELS: usize = 20;
 /// The default step index (must rasterize at the app's original 20/32 px sizes).
-pub(crate) const DEFAULT_LEVEL: usize = 2;
+pub(crate) const DEFAULT_LEVEL: usize = 9;
 
-/// Rasterization sizes (pixels per em) per kind, one entry per level.
+/// Rasterization sizes (pixels per em) per kind, one entry per level. Text spans
+/// ±20 px around the 20 px default (0 px rounds up to the 2 px floor); title stays
+/// near its original ~1.6× of text.
 const PX: [[f32; LEVELS]; 2] = [
-    [16.0, 18.0, 20.0, 24.0, 28.0], // text
-    [26.0, 29.0, 32.0, 38.0, 44.0], // title
+    [
+        2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0, 26.0, 28.0, 30.0, 32.0,
+        34.0, 36.0, 38.0, 40.0,
+    ], // text
+    [
+        3.0, 6.0, 10.0, 13.0, 16.0, 19.0, 22.0, 26.0, 29.0, 32.0, 35.0, 38.0, 41.0, 44.0, 47.0,
+        50.0, 53.0, 56.0, 59.0, 62.0,
+    ], // title
 ];
 
 /// A UI text size: one of two kinds (body text or title) at one of [`LEVELS`] steps.
@@ -237,6 +245,12 @@ pub(crate) fn rasterize_fallback(size: Size, c: char) -> Option<GlyphSlot> {
 mod tests {
     use super::*;
 
+    /// Darkest sample a glyph must reach even at the smallest UI sizes, where strokes
+    /// are sub-pixel wide and never fully cover a pixel ('가' peaks at 44 at 2 px).
+    const FAINT_INK_FLOOR: u8 = 40;
+    /// Pixel size from which strokes cover whole pixels, so solid ink is expected.
+    const SOLID_INK_PX: f32 = 16.0;
+
     #[test]
     fn charset_covers_printable_ascii_and_extra_glyphs() {
         let chars: Vec<char> = charset().collect();
@@ -260,16 +274,25 @@ mod tests {
         // dark enough to rule out a thin variable-font default instance sneaking back.
         for &title in &[false, true] {
             for level in 0..LEVELS {
+                let size = Size { title, level };
                 let scaled = PxScaleFont {
                     font: &font,
-                    scale: PxScale::from(Size { title, level }.px()),
+                    scale: PxScale::from(size.px()),
                 };
                 let raster = raster_slot(&scaled, '가')
                     .raster
                     .expect("'가' should have a bitmap");
                 assert!(raster.width > 0 && raster.height > 0);
                 let darkest = raster.pixels.iter().copied().max().unwrap();
-                assert!(darkest >= 200, "'가' ink too faint: darkest={darkest}");
+                if size.px() >= SOLID_INK_PX {
+                    assert!(darkest >= 200, "'가' ink too faint: darkest={darkest}");
+                } else {
+                    assert!(
+                        darkest >= FAINT_INK_FLOOR,
+                        "'가' ink too faint at {} px: darkest={darkest}",
+                        size.px()
+                    );
+                }
             }
         }
     }
@@ -292,7 +315,13 @@ mod tests {
     fn rasterizes_anti_aliased_monospaced_glyphs() {
         let rasters = rasterize_sizes();
         assert_eq!(rasters.len(), 2 * LEVELS);
-        for r in &rasters {
+        for (i, r) in rasters.iter().enumerate() {
+            // Rasters are ordered by `Size::index`: all text levels, then all title
+            // levels, so the size can be recovered from the flat position.
+            let size = Size {
+                title: i >= LEVELS,
+                level: i % LEVELS,
+            };
             let advance_m = r.slots[char_index('M').unwrap()].advance;
             // Hack is monospaced: the regular character set shares the 'M' advance.
             // (The Nerd Font gear icon may legitimately use its own metrics.)
@@ -322,7 +351,16 @@ mod tests {
             let m = r.slots[char_index('M').unwrap()].raster.as_ref().unwrap();
             assert!(m.width > 0 && m.height > 0);
             assert!(m.top > 0.0, "'M' ink must sit above the baseline");
-            assert!(m.pixels.contains(&255), "'M' should have a solid core");
+            if size.px() >= SOLID_INK_PX {
+                assert!(m.pixels.contains(&255), "'M' should have a solid core");
+            } else {
+                let darkest = m.pixels.iter().copied().max().unwrap();
+                assert!(
+                    darkest >= FAINT_INK_FLOOR,
+                    "'M' ink too faint at {} px: darkest={darkest}",
+                    size.px()
+                );
+            }
             assert!(
                 m.pixels.iter().any(|&p| p > 0 && p < 255),
                 "'M' should have anti-aliased edge pixels"

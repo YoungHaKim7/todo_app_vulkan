@@ -1,2 +1,3 @@
-font=4
-window=1674x895
+v=3
+font=19
+window=2005x1085
