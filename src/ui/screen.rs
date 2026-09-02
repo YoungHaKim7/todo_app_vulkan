@@ -3,7 +3,7 @@
 use std::{path::Path, time::Instant};
 
 use super::{
-    Rect, Ui, line_height, text_width,
+    Rect, Ui, ascent, descent, line_height, text_width,
     widgets::{
         button, caret_blinking, checkbox, delete_button, edit_button, gear_button, priority_button,
     },
@@ -238,7 +238,9 @@ pub(crate) fn draw_ui(
                 let a = caret.max(wrap.line_start(n));
                 let b = (caret + preedit_len).min(wrap.line_end(&display, n));
                 if b > a {
-                    let underline_y = line_y(n) + line_height(text) - 2.0 * s;
+                    // Just under the ink, not under the line box: with ink-hugging
+                    // line height there is no slack below the box for the underline.
+                    let underline_y = line_y(n) + ascent(text) + descent(text) + 1.0 * s;
                     ui.line(
                         [tx + wrap.x_in_line(&display, a, n), underline_y],
                         [tx + wrap.x_in_line(&display, b, n), underline_y],
@@ -646,5 +648,99 @@ fn draw_settings_window(
     };
     if button(ui, close, close_label, &BTN_GHOST, true) {
         settings.open = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::atlas;
+
+    /// Wrapped lines of a long input hug each other: in the drawn vertex stream the
+    /// blank gap between the two lines' glyph quads must be a small fraction of the
+    /// whitespace the old spacing left. The old pitch was exactly `px`: ab_glyph
+    /// scales by the Hack line box, whose gap is zero. The text is all '가' so both
+    /// wrapped lines have identical ink extents and the gap reads off directly.
+    #[test]
+    fn wrapped_field_lines_nearly_touch() {
+        let font_level = 14; // the user's setting: 30 px text
+        let px = Size::text(font_level).px();
+        let mut todos = Todos::load(Path::new("/nonexistent-test-todos.txt"));
+        todos.focused = true;
+        todos.input.text = "가".repeat(100);
+        let mut settings = Settings {
+            open: false,
+            font_level,
+            window_size: None,
+        };
+        let mut ui = Ui::new([-1.0, -1.0]);
+        draw_ui(
+            &mut todos,
+            &mut settings,
+            Path::new("/nonexistent-test-todos.txt"),
+            Path::new("/nonexistent-test-settings.txt"),
+            &mut ui,
+            1527.0,
+            963.0,
+        );
+
+        // Glyph quads inside the field: the caret and field border are solid fills
+        // sampled from the white cell, so a v below it filters them out. Glyphs (and
+        // rects) each push exactly six consecutive vertices.
+        let (_, tex_h) = atlas::dimensions();
+        let white_v_end = 4.5 / tex_h as f32;
+        let f = todos.field_rect;
+        let mut quads: Vec<(f32, f32)> = Vec::new(); // (min_y, max_y) per glyph
+        for chunk in ui.verts.chunks(6) {
+            if chunk.iter().any(|v| v.uv[1] > white_v_end) {
+                let xs: Vec<f32> = chunk.iter().map(|v| v.pos[0]).collect();
+                let ys: Vec<f32> = chunk.iter().map(|v| v.pos[1]).collect();
+                let (x0, x1) = (
+                    xs.iter().copied().fold(f32::INFINITY, f32::min),
+                    xs.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+                );
+                let (y0, y1) = (
+                    ys.iter().copied().fold(f32::INFINITY, f32::min),
+                    ys.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+                );
+                if x0 >= f.x && x1 <= f.x + f.w && y0 >= f.y && y1 <= f.y + f.h {
+                    quads.push((y0, y1));
+                }
+            }
+        }
+        assert!(
+            quads.len() > 30,
+            "expected the wrapped field glyphs, got {}",
+            quads.len()
+        );
+
+        // Two clusters by top edge; identical glyphs, so one top per line.
+        let mut tops: Vec<f32> = quads.iter().map(|q| q.0).collect();
+        tops.sort_by(|a, b| a.total_cmp(b));
+        let split = tops
+            .windows(2)
+            .position(|w| w[1] - w[0] > 5.0)
+            .expect("field text should wrap to a second line");
+        let mut line1: Vec<(f32, f32)> = Vec::new();
+        let mut line2: Vec<(f32, f32)> = Vec::new();
+        for q in quads {
+            if q.0 <= tops[split] {
+                line1.push(q);
+            } else {
+                line2.push(q);
+            }
+        }
+        let ink_h = line1.iter().map(|q| q.1 - q.0).fold(0.0f32, f32::max);
+        let gap = line2.iter().map(|q| q.0).fold(f32::INFINITY, f32::min)
+            - line1.iter().map(|q| q.1).fold(f32::NEG_INFINITY, f32::max);
+        let old_gap = px - ink_h;
+        let reduction = (old_gap - gap) / old_gap * 100.0;
+        println!(
+            "px={px} ink_h={ink_h:.2} gap={gap:.2} old_gap={old_gap:.2} reduction={reduction:.1}%"
+        );
+        assert!(
+            gap < 0.1 * old_gap,
+            "inter-line gap {gap:.2}px must be under 10% of the old {old_gap:.2}px whitespace"
+        );
     }
 }

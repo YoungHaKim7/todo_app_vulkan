@@ -52,7 +52,12 @@ pub(crate) struct Slot {
 
 /// Metrics for one font size.
 pub(crate) struct SizeEntry {
+    /// Ink top above the baseline over the body-text glyphs.
     pub(crate) ascent: f32,
+    /// Shallowest ink bottom below the baseline.
+    pub(crate) descent: f32,
+    /// Baseline-to-baseline pitch: the body script's ink (Hangul when the fallback
+    /// font exists), so consecutive wrapped lines exactly touch.
     pub(crate) line_height: f32,
     slots: Vec<Slot>,
 }
@@ -316,7 +321,8 @@ fn build() -> FontAtlas {
         .zip(&bands)
         .map(|(r, band)| SizeEntry {
             ascent: r.ascent,
-            line_height: r.ascent - r.descent + r.line_gap,
+            descent: r.descent,
+            line_height: r.line_height,
             slots: r
                 .slots
                 .iter()
@@ -381,7 +387,25 @@ mod tests {
             for size in [Size::text(level), Size::title(level)] {
                 let entry = atlas.size(size);
                 assert!(entry.ascent > 0.0);
-                assert!(entry.line_height > entry.ascent);
+                assert!(entry.descent > 0.0);
+                // The ink top covers the tall Latin letters ('b' is Hack's tallest).
+                let tall = quad(size, 'b').expect("'b' needs a quad");
+                assert!(
+                    tall.top <= entry.ascent + 0.5,
+                    "'b' ink top {} must fit under the ascent {}",
+                    tall.top,
+                    entry.ascent
+                );
+                // The pitch hugs the ink: at readable sizes it stays within a few
+                // percent of the em, not the fonts' ~1.16 em nominal line boxes.
+                if size.px() >= 16.0 {
+                    assert!(
+                        entry.line_height <= 1.05 * size.px(),
+                        "line height {} must stay near the {} px em",
+                        entry.line_height,
+                        size.px()
+                    );
+                }
 
                 // Space advances but never draws; 'M' and the extra glyphs have bitmaps.
                 assert!(quad(size, ' ').is_none());

@@ -117,9 +117,17 @@ pub(crate) struct GlyphSlot {
 
 /// Everything rasterized for one [`Size`].
 pub(crate) struct SizeRaster {
+    /// Ink top above the baseline over the body-text glyphs of both scripts; where
+    /// [`crate::ui`] drops the baseline into a line box.
     pub(crate) ascent: f32,
+    /// Shallowest ink bottom below the baseline (positive): where composition
+    /// underlines sit clear of the glyphs.
     pub(crate) descent: f32,
-    pub(crate) line_gap: f32,
+    /// Baseline-to-baseline pitch: the body script's ink, so consecutive wrapped
+    /// lines exactly touch. The body script is Hangul when the fallback font exists
+    /// — this app's users type Korean — otherwise Latin; the other script's ink
+    /// reaches a few pixels further and may kiss across lines.
+    pub(crate) line_height: f32,
     /// One slot per character in [`charset`].
     pub(crate) slots: Vec<GlyphSlot>,
 }
@@ -130,25 +138,49 @@ pub(crate) fn rasterize_sizes() -> Vec<SizeRaster> {
     let mut rasters = Vec::with_capacity(2 * LEVELS);
     for &title in &[false, true] {
         for level in 0..LEVELS {
+            let size = Size { title, level };
             let scaled = PxScaleFont {
                 font: &font,
-                scale: PxScale::from(Size { title, level }.px()),
+                scale: PxScale::from(size.px()),
             };
-            rasters.push(rasterize(scaled));
+            rasters.push(rasterize(scaled, size));
         }
     }
     rasters
 }
 
-fn rasterize(scaled: PxScaleFont<&FontRef>) -> SizeRaster {
-    let slots = charset().map(|c| raster_slot(&scaled, c)).collect();
+fn rasterize(scaled: PxScaleFont<&FontRef>, size: Size) -> SizeRaster {
+    let slots: Vec<GlyphSlot> = charset().map(|c| raster_slot(&scaled, c)).collect();
+
+    // Line metrics hug the ink body text is made of, not the font's nominal line
+    // box: ASCII letters and digits for Latin (brackets reach past them, but rarely
+    // stack directly under another line's descenders) plus a Hangul syllable from
+    // the fallback, which sets the pitch when it exists.
+    let latin = ink(charset()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '·' || *c == '−')
+        .filter_map(|c| slots[char_index(c).unwrap()].raster.as_ref()));
+    let hangul = rasterize_fallback(size, '가')
+        .and_then(|s| s.raster)
+        .map(|g| ink(std::iter::once(&g)))
+        .unwrap_or(latin);
 
     SizeRaster {
-        ascent: scaled.ascent(),
-        descent: scaled.descent(),
-        line_gap: scaled.line_gap(),
+        ascent: latin.0.max(hangul.0),
+        descent: (-latin.1).min(-hangul.1),
+        line_height: (hangul.0 - hangul.1)
+            // Degenerate tiny sizes round raster ink up past the box; keep the old
+            // pitch there rather than spacing those lines wider than before.
+            .min(scaled.ascent() - scaled.descent() + scaled.line_gap()),
         slots,
     }
+}
+
+/// Union of the ink extents of `glyphs` as `(top above, bottom below)` the baseline.
+/// An empty set folds to `(0.0, 0.0)`.
+fn ink<'a>(glyphs: impl Iterator<Item = &'a Raster>) -> (f32, f32) {
+    glyphs.fold((0.0, 0.0), |(top, bottom), g| {
+        (top.max(g.top), bottom.min(g.top - g.height as f32))
+    })
 }
 
 /// Rasterizes one glyph of any scaled font into coverage pixels plus metrics.

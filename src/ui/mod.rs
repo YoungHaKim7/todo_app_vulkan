@@ -192,9 +192,22 @@ impl Ui {
     }
 }
 
-/// Vertical distance the rasterized line box occupies (ascent + descent + line gap).
+/// Baseline-to-baseline distance: the ink the tallest script in use occupies plus a
+/// hair of leading. The fonts' nominal line boxes are ~16% taller, patched wide for
+/// Nerd Font icons nobody stacks in running text.
 pub(crate) fn line_height(size: Size) -> f32 {
     atlas::global().size(size).line_height
+}
+
+/// Ink top above the baseline: how far the baseline sits below a line box's top.
+pub(crate) fn ascent(size: Size) -> f32 {
+    atlas::global().size(size).ascent
+}
+
+/// Shallowest ink bottom below the baseline, where composition underlines sit clear
+/// of the glyphs.
+pub(crate) fn descent(size: Size) -> f32 {
+    atlas::global().size(size).descent
 }
 
 pub(crate) fn text_width(s: &str, size: Size) -> f32 {
