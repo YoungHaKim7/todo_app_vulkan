@@ -225,20 +225,30 @@ impl App {
 }
 
 /// Builds the clipboard for the session at hand: Wayland when the window runs on a
-/// Wayland display, X11 otherwise, and a no-op stub if neither connects.
+/// Wayland display, the platform default (`ClipboardContext`) otherwise, and a
+/// no-op stub if that fails to connect.
 fn make_clipboard(window: &Window) -> Box<dyn ClipboardProvider> {
-    use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
-    if let Ok(handle) = window.display_handle()
-        && let RawDisplayHandle::Wayland(display) = handle.as_raw()
+    // The Wayland shortcut only exists where copypasta compiles it in; elsewhere
+    // `ClipboardContext` already wraps the platform clipboard.
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
-        // SAFETY: the pointer is the live Wayland display backing `window`, which
-        // outlives the clipboard built from it.
-        let clipboard = unsafe {
-            copypasta::wayland_clipboard::create_clipboards_from_external(display.display.as_ptr())
+        use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+        if let Ok(handle) = window.display_handle()
+            && let RawDisplayHandle::Wayland(display) = handle.as_raw()
+        {
+            // SAFETY: the pointer is the live Wayland display backing `window`, which
+            // outlives the clipboard built from it.
+            let clipboard = unsafe {
+                copypasta::wayland_clipboard::create_clipboards_from_external(
+                    display.display.as_ptr(),
+                )
+            }
+            .1;
+            return Box::new(clipboard);
         }
-        .1;
-        return Box::new(clipboard);
     }
+    // Silence "unused parameter" on platforms where the branch above is compiled out.
+    let _ = window;
     ClipboardContext::new()
         .map(|ctx| Box::new(ctx) as Box<dyn ClipboardProvider>)
         .unwrap_or_else(|_| Box::new(NopClipboardContext::new().unwrap()))
