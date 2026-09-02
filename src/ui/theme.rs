@@ -13,6 +13,11 @@ pub(crate) const COL_TEXT: [f32; 4] = [0.92, 0.93, 0.96, 1.0];
 pub(crate) const COL_TEXT_DIM: [f32; 4] = [0.44, 0.46, 0.55, 1.0];
 pub(crate) const COL_PLACEHOLDER: [f32; 4] = [0.38, 0.40, 0.48, 1.0];
 pub(crate) const COL_CHECK: [f32; 4] = [0.30, 0.78, 0.49, 1.0];
+/// Priority stripes left of each row's checkbox: red = emergency, yellow = next
+/// up, gray = general (the default).
+pub(crate) const COL_PRIO_HIGH: [f32; 4] = [0.98, 0.45, 0.43, 1.0];
+pub(crate) const COL_PRIO_MID: [f32; 4] = [0.95, 0.77, 0.30, 1.0];
+pub(crate) const COL_PRIO_LOW: [f32; 4] = [0.44, 0.46, 0.55, 1.0];
 /// Text selection highlight inside the input field: the accent at low alpha.
 pub(crate) const COL_SELECTION: [f32; 4] = [0.23, 0.52, 0.93, 0.35];
 pub(crate) const COL_DANGER_HOVER: [f32; 4] = [0.98, 0.45, 0.43, 1.0];

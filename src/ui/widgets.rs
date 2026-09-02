@@ -56,6 +56,23 @@ pub(crate) fn checkbox(ui: &mut Ui, r: Rect, checked: bool) -> bool {
     clicked
 }
 
+/// Priority stripe at a row's left edge; clicking it cycles the task's priority
+/// (gray → yellow → red → gray). The stripe itself is thin, so it takes a wide
+/// row-height `hit` rect around the visible `bar` for an easy click, tinted with
+/// the priority color on hover.
+pub(crate) fn priority_button(ui: &mut Ui, hit: Rect, bar: Rect, color: [f32; 4]) -> bool {
+    let hot = ui.hovered(hit);
+    if hot {
+        ui.pointer = true;
+    }
+    let clicked = ui.take_click(hit);
+    if hot {
+        ui.rect(hit, [color[0], color[1], color[2], 0.15]);
+    }
+    ui.rect(bar, color);
+    clicked
+}
+
 pub(crate) fn delete_button(ui: &mut Ui, r: Rect) -> bool {
     let hot = ui.hovered(r);
     if hot {

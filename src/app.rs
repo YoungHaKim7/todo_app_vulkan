@@ -54,7 +54,7 @@ impl App {
     pub(crate) fn new(event_loop: &EventLoop<()>) -> Self {
         println!("Vulkan ToDo");
         println!(
-            "Controls: type + Enter = add task · click/drag in the input = caret/selection · Ctrl+A/C/X/V · Ctrl+Backspace = delete word · click checkbox = toggle · X = delete · scroll = move list · settings: gear (top left) · Esc: close window / quit"
+            "Controls: type + Enter = add task · click/drag in the input = caret/selection · Ctrl+A/C/X/V · Ctrl+Backspace = delete word · click checkbox = toggle · click a row's color stripe = cycle priority (red on top, yellow next, gray last) · X = delete · scroll = move list · settings: gear (top left) · Esc: close window / quit"
         );
 
         let gpu = GpuContext::new(event_loop);

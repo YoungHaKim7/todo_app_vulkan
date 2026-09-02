@@ -1,4 +1,5 @@
-//! ToDo item model and persistence to `todos.txt` (one `flag<TAB>text` line per item).
+//! ToDo item model and persistence to `todos.txt` (one
+//! `flag<TAB>priority<TAB>text` line per item).
 
 use std::{fs, path::Path, time::Instant};
 
@@ -16,23 +17,86 @@ pub(crate) fn sanitize(c: char) -> Option<char> {
     }
 }
 
+/// A task's priority, shown as a colored stripe left of the row's checkbox: red
+/// for emergencies, yellow for what is next up, gray for everything else. The
+/// discriminant is the save-file digit (0 = gray, 1 = yellow, 2 = red).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum Priority {
+    /// General: gray stripe, listed last; the default when nothing is entered.
+    #[default]
+    Low,
+    /// Next up: yellow stripe, listed after the emergencies.
+    Mid,
+    /// Emergency: red stripe, listed on top.
+    High,
+}
+
+impl Priority {
+    /// Sort key: emergencies first, general last (smaller ranks higher).
+    fn rank(self) -> u8 {
+        match self {
+            Priority::High => 0,
+            Priority::Mid => 1,
+            Priority::Low => 2,
+        }
+    }
+
+    /// The priority a click on the stripe selects: gray → yellow → red → gray.
+    fn next(self) -> Self {
+        match self {
+            Priority::Low => Priority::Mid,
+            Priority::Mid => Priority::High,
+            Priority::High => Priority::Low,
+        }
+    }
+}
+
 pub(crate) struct Todo {
     pub(crate) text: String,
     pub(crate) done: bool,
+    pub(crate) priority: Priority,
 }
 
 fn parse_save_line(line: &str) -> Option<Todo> {
-    let (flag, text) = line.split_once('\t')?;
+    let mut fields = line.splitn(3, '\t');
+    let flag = fields.next()?;
+    let mid = fields.next()?;
+    // Newer saves are `done<TAB>priority<TAB>text`; older ones `done<TAB>text`
+    // with no priority column, which reads back as gray.
+    let (priority, text) = match fields.next() {
+        Some(text) => (parse_priority(mid), text),
+        None => (Priority::Low, mid),
+    };
     let text: String = text.chars().filter_map(sanitize).collect();
     let text = text.trim().to_string();
     (!text.is_empty()).then_some(Todo {
         text,
         done: flag.trim() == "1",
+        priority,
     })
 }
 
+fn parse_priority(s: &str) -> Priority {
+    match s.trim() {
+        "2" => Priority::High,
+        "1" => Priority::Mid,
+        _ => Priority::Low,
+    }
+}
+
 fn encode_save_line(todo: &Todo) -> String {
-    format!("{}\t{}", u8::from(todo.done), todo.text)
+    format!(
+        "{}\t{}\t{}",
+        u8::from(todo.done),
+        todo.priority as u8,
+        todo.text
+    )
+}
+
+/// Orders items red first, then yellow, then gray. Stable, so tasks keep their
+/// relative order within one priority.
+fn sort_by_priority(items: &mut [Todo]) {
+    items.sort_by_key(|t| t.priority.rank());
 }
 
 pub(crate) struct Todos {
@@ -60,9 +124,12 @@ pub(crate) struct Todos {
 
 impl Todos {
     pub(crate) fn load(path: &Path) -> Self {
-        let items = fs::read_to_string(path)
+        let mut items: Vec<Todo> = fs::read_to_string(path)
             .map(|data| data.lines().filter_map(parse_save_line).collect())
             .unwrap_or_default();
+        // Saves are written already sorted, but older or hand-edited files may not
+        // be; sorting here keeps red on top from the first frame.
+        sort_by_priority(&mut items);
         Self {
             items,
             input: TextField::new(),
@@ -102,10 +169,27 @@ impl Todos {
         if text.is_empty() {
             return;
         }
-        self.items.push(Todo { text, done: false });
+        // New tasks enter as gray; the sort below is a no-op placement-wise (gray
+        // sorts last) but keeps the ordering invariant explicit.
+        self.items.push(Todo {
+            text,
+            done: false,
+            priority: Priority::Low,
+        });
+        sort_by_priority(&mut self.items);
         self.input.clear();
         self.caret_since = Instant::now();
         self.preedit = None;
+        self.save(path);
+    }
+
+    /// Advances the stripe-clicked task's priority (gray → yellow → red → gray)
+    /// and re-sorts, so red items jump to the top the moment they are marked.
+    pub(crate) fn cycle_priority(&mut self, i: usize, path: &Path) {
+        if let Some(todo) = self.items.get_mut(i) {
+            todo.priority = todo.priority.next();
+        }
+        sort_by_priority(&mut self.items);
         self.save(path);
     }
 
@@ -187,17 +271,97 @@ mod tests {
     fn save_file_roundtrip() {
         let path =
             std::env::temp_dir().join(format!("vulkan_todo_test_{}.txt", std::process::id()));
-        let todos = Todos {
-            items: vec![
-                Todo {
-                    text: "buy milk".into(),
-                    done: false,
-                },
-                Todo {
-                    text: "ship release 1.0!".into(),
-                    done: true,
-                },
-            ],
+        let todos = with_items(vec![
+            todo("buy milk", false, Priority::Low),
+            todo("ship release 1.0!", true, Priority::High),
+        ]);
+        todos.save(&path);
+        let loaded = Todos::load(&path);
+        assert_eq!(loaded.items.len(), 2);
+        // Loading sorts red on top, so the urgent task comes first.
+        assert_eq!(loaded.items[0].text, "ship release 1.0!");
+        assert!(loaded.items[0].done);
+        assert_eq!(loaded.items[0].priority, Priority::High);
+        assert_eq!(loaded.items[1].text, "buy milk");
+        assert!(!loaded.items[1].done);
+        assert_eq!(loaded.items[1].priority, Priority::Low);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn parse_accepts_old_and_new_save_lines() {
+        // Older files have no priority column; they read back as gray.
+        let old = parse_save_line("1\tlegacy task").unwrap();
+        assert_eq!(old.text, "legacy task");
+        assert!(old.done);
+        assert_eq!(old.priority, Priority::Low);
+
+        let high = parse_save_line("0\t2\turgent").unwrap();
+        assert_eq!(high.text, "urgent");
+        assert!(!high.done);
+        assert_eq!(high.priority, Priority::High);
+
+        let mid = parse_save_line("1\t1\tsoon").unwrap();
+        assert!(mid.done);
+        assert_eq!(mid.priority, Priority::Mid);
+
+        assert_eq!(
+            encode_save_line(&todo("urgent", false, Priority::High)),
+            "0\t2\turgent"
+        );
+    }
+
+    #[test]
+    fn sort_keeps_red_on_top_yellow_next_gray_last() {
+        let mut items = vec![
+            todo("gray a", false, Priority::Low),
+            todo("red", false, Priority::High),
+            todo("yellow", false, Priority::Mid),
+            todo("gray b", false, Priority::Low),
+        ];
+        sort_by_priority(&mut items);
+        let texts: Vec<&str> = items.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(texts, ["red", "yellow", "gray a", "gray b"]);
+    }
+
+    #[test]
+    fn cycling_priority_resorts_and_saves() {
+        let path =
+            std::env::temp_dir().join(format!("vulkan_todo_prio_{}.txt", std::process::id()));
+        let mut todos = with_items(vec![
+            todo("gray a", false, Priority::Low),
+            todo("gray b", false, Priority::Low),
+            todo("red!", false, Priority::High),
+        ]);
+        // gray b → yellow: it moves above both grays but below red.
+        todos.cycle_priority(1, &path);
+        assert_eq!(todos.items[0].text, "red!");
+        assert_eq!(todos.items[1].text, "gray b");
+        assert_eq!(todos.items[1].priority, Priority::Mid);
+        assert_eq!(todos.items[2].text, "gray a");
+        // And again → red: it joins the emergencies on top.
+        todos.cycle_priority(1, &path);
+        assert_eq!(todos.items[0].text, "red!");
+        assert_eq!(todos.items[1].text, "gray b");
+        assert_eq!(todos.items[1].priority, Priority::High);
+        // The sorted order survived the save/load roundtrip.
+        let loaded = Todos::load(&path);
+        let texts: Vec<&str> = loaded.items.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(texts, ["red!", "gray b", "gray a"]);
+        let _ = fs::remove_file(&path);
+    }
+
+    fn todo(text: &str, done: bool, priority: Priority) -> Todo {
+        Todo {
+            text: text.into(),
+            done,
+            priority,
+        }
+    }
+
+    fn with_items(items: Vec<Todo>) -> Todos {
+        Todos {
+            items,
             input: TextField::new(),
             focused: false,
             caret_since: Instant::now(),
@@ -218,14 +382,6 @@ mod tests {
                 w: 0.0,
                 h: 0.0,
             },
-        };
-        todos.save(&path);
-        let loaded = Todos::load(&path);
-        assert_eq!(loaded.items.len(), 2);
-        assert_eq!(loaded.items[0].text, "buy milk");
-        assert!(!loaded.items[0].done);
-        assert_eq!(loaded.items[1].text, "ship release 1.0!");
-        assert!(loaded.items[1].done);
-        let _ = fs::remove_file(&path);
+        }
     }
 }

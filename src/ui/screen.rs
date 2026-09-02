@@ -4,17 +4,18 @@ use std::{path::Path, time::Instant};
 
 use super::{
     Rect, Ui, line_height, text_width,
-    widgets::{button, caret_blinking, checkbox, delete_button, gear_button},
+    widgets::{button, caret_blinking, checkbox, delete_button, gear_button, priority_button},
 };
 use crate::font::{self, Size};
 
 use crate::{
     input::Wrap,
     settings::Settings,
-    todos::Todos,
+    todos::{Priority, Todos},
     ui::theme::{
         BTN_GHOST, BTN_PRIMARY, COL_ACCENT, COL_ACCENT_HOVER, COL_BORDER, COL_FIELD, COL_OVERLAY,
-        COL_PANEL, COL_PLACEHOLDER, COL_ROW_ALT, COL_SELECTION, COL_TEXT, COL_TEXT_DIM,
+        COL_PANEL, COL_PLACEHOLDER, COL_PRIO_HIGH, COL_PRIO_LOW, COL_PRIO_MID, COL_ROW_ALT,
+        COL_SELECTION, COL_TEXT, COL_TEXT_DIM,
     },
 };
 
@@ -318,8 +319,30 @@ pub(crate) fn draw_ui(
             );
         }
 
-        let cb = Rect {
+        // Priority stripe before the checkbox — red = emergency, yellow = next,
+        // gray = general. The thin bar carries a wide row-height hit rect so one
+        // click lands; a click cycles the priority and the row re-sorts.
+        let stripe_hit = Rect {
+            x: pad,
+            y: ry,
+            w: 13.0 * s,
+            h: item_h,
+        };
+        let stripe = Rect {
             x: pad + 2.0 * s,
+            y: ry + 5.0 * s,
+            w: 5.0 * s,
+            h: item_h - 10.0 * s,
+        };
+        let stripe_clicked = priority_button(
+            ui,
+            stripe_hit,
+            stripe,
+            priority_color(todos.items[i].priority),
+        );
+
+        let cb = Rect {
+            x: pad + 15.0 * s,
             y: ry + (item_h - 24.0 * s) * 0.5,
             w: 24.0 * s,
             h: 24.0 * s,
@@ -364,6 +387,13 @@ pub(crate) fn draw_ui(
             interacted_elsewhere = true;
             break;
         }
+        // Handled last so the row above is fully drawn from pre-cycle state; the
+        // re-sort then re-draws every row fresh on the next frame.
+        if stripe_clicked {
+            todos.cycle_priority(i, save_path);
+            interacted_elsewhere = true;
+            break;
+        }
     }
 
     if todos.items.is_empty() {
@@ -398,7 +428,7 @@ pub(crate) fn draw_ui(
         );
     }
 
-    let hint = "Enter: add · Esc: quit";
+    let hint = "Enter: add · click stripe: priority · Esc: quit";
     ui.text_at(pad, h - 36.0 * s, hint, text, COL_TEXT_DIM);
 
     let done_n = todos.done_count();
@@ -450,6 +480,15 @@ pub(crate) fn draw_ui(
             ui.clicks = held_clicks;
             draw_settings_window(settings, settings_path, ui, w, h, &panel, s, text, title);
         }
+    }
+}
+
+/// Stripe color for a priority: red = emergency, yellow = next up, gray = general.
+fn priority_color(p: Priority) -> [f32; 4] {
+    match p {
+        Priority::High => COL_PRIO_HIGH,
+        Priority::Mid => COL_PRIO_MID,
+        Priority::Low => COL_PRIO_LOW,
     }
 }
 
