@@ -4,6 +4,11 @@
 # color는 여기서 찾자
 - https://convertingcolors.com/cmyk-color-0.30_0.30_0.00_0.89.html?search=CMYK(0.30,%200.30,%200.00,%200.89)
 
+
+# 컬러 운영체제별로 약간 다르게 보임
+
+## WindowsOS에서는 이게 검은색이고 젤 맘에 든다.
+
 ```rust
 //! Color palette and button styles.
 
@@ -33,7 +38,7 @@ pub(crate) const COL_OVERLAY: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
 ```
 
 
-# Linux에서는 이게 검은색 배경
+## Linux에서는 이게 검은색 배경
 
 ```rust
 //! Color palette and button styles.
