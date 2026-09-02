@@ -480,8 +480,11 @@ impl RenderContext {
     }
 
     /// Waits for the frame still in flight (if any) and resets the tracking future.
-    /// Paths that drop GPU resources the frame still uses — swapchain recreation
-    /// replacing the vertex buffers — must call this first.
+    /// Called before overwriting a swapchain image's vertex buffer (vulkano holds the
+    /// CPU-write lock until the reading frame's fence is observed, and acquire can
+    /// return the image the previous frame just used), and before dropping GPU
+    /// resources a frame still uses — swapchain recreation replacing the vertex
+    /// buffers.
     fn wait_for_frame(&mut self) {
         if let Some(previous) = self.previous_frame_end.take()
             // `queue()` is `None` once the future is Cleaned (GPU done, resources
@@ -567,15 +570,12 @@ impl App {
 
         rcx.previous_frame_end.as_mut().unwrap().cleanup_finished();
 
-        let mut dbg_recreated = false;  // TEMP-DEBUG
         if rcx.recreate_swapchain {
-            dbg_recreated = true;  // TEMP-DEBUG
             // Wait for the in-flight frame before dropping the vertex buffers it
-            // reads: a freed subbuffer's memory returns to the allocator pool, and
+            // reads: their memory returns to the allocator pool when dropped, and
             // the replacement buffers allocated below can be handed that same
-            // memory while the GPU still reads it — the write then fails with
-            // `AccessConflict(DeviceRead)`. This is a resize path, not per-frame,
-            // so the wait is acceptable.
+            // memory while the GPU still reads it. This is a resize path, not
+            // per-frame, so the wait is acceptable.
             rcx.wait_for_frame();
             let (new_swapchain, new_images) = rcx
                 .swapchain
@@ -646,22 +646,18 @@ impl App {
             rcx.recreate_swapchain = true;
         }
 
-        // The image we just acquired cannot be in use by the GPU anymore, so the vertex buffer
-        // belonging to it is safe to overwrite. Writing here (instead of before acquiring) is
-        // what prevents `AccessConflict(DeviceRead)` when frames are still in flight.
+        // Acquire can hand back the image the previous frame just used, and vulkano
+        // releases a buffer's CPU-write access only once that frame's fence has been
+        // observed — not merely when the GPU is done with it. Wait for the previous
+        // frame before overwriting its vertex buffer; the wait returns immediately
+        // once the GPU has caught up.
+        rcx.wait_for_frame();
+
+        // With the previous frame's fence observed, the buffer for this image index
+        // is safe to overwrite.
         let vertex_buffer = rcx.vertex_buffers[image_index as usize].clone();
         {
-            let mut guard = match vertex_buffer.write() {  // TEMP-DEBUG
-                Ok(g) => g,
-                Err(e) => {
-                    eprintln!(
-                        "DBG write failed: {e:?} image_index={image_index} swapchain={:p} nbufs={} recreated={dbg_recreated} buf={:p}",
-                        rcx.swapchain, rcx.vertex_buffers.len(),
-                        std::sync::Arc::as_ptr(vertex_buffer.buffer()),
-                    );
-                    std::process::exit(2);
-                }
-            };
+            let mut guard = vertex_buffer.write().unwrap();
             guard[..ui.verts.len()].copy_from_slice(&ui.verts);
         }
 
@@ -728,8 +724,6 @@ impl App {
                 rcx.previous_frame_end = Some(future.boxed());
             }
             Err(VulkanError::OutOfDate) => {
-                eprintln!("DBG flush OutOfDate image_index={image_index} buf={:p}",  // TEMP-DEBUG
-                    std::sync::Arc::as_ptr(vertex_buffer.buffer()));
                 rcx.recreate_swapchain = true;
                 rcx.previous_frame_end = Some(sync::now(self.gpu.device.clone()).boxed());
             }
