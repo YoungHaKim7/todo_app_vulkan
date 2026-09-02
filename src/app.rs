@@ -256,7 +256,7 @@ fn make_clipboard(window: &Window) -> Box<dyn ClipboardProvider> {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let rcx = RenderContext::new(&self.gpu, event_loop);
+        let rcx = RenderContext::new(&self.gpu, event_loop, self.settings.window_size);
         self.clipboard = make_clipboard(&rcx.window);
         self.rcx = Some(rcx);
     }
@@ -271,9 +271,21 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
-            WindowEvent::Resized(_) => {
+            WindowEvent::Resized(size) => {
                 if let Some(rcx) = self.rcx.as_mut() {
                     rcx.recreate_swapchain = true;
+                }
+                // Remember the size for the next run. Stored in logical units so a
+                // changed display scale keeps the same UI-relative window; a maximized
+                // window's size is not a deliberate choice, so it is not recorded.
+                if let Some(rcx) = self.rcx.as_ref()
+                    && !rcx.window.is_maximized()
+                {
+                    let logical = size.to_logical::<f64>(rcx.window.scale_factor());
+                    let [w, h] = [logical.width.round() as u32, logical.height.round() as u32];
+                    if w > 0 && h > 0 {
+                        self.settings.window_size = Some([w, h]);
+                    }
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -343,6 +355,15 @@ impl ApplicationHandler for App {
                 self.redraw();
             }
             _ => {}
+        }
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // The window size is tracked during the run and written once here rather than
+        // on every resize event (which fire continuously during a drag). Headless frame
+        // dumps apply debug overrides to the settings and must not touch the file.
+        if std::env::var_os("TODO_DUMP_FRAME").is_none() {
+            self.settings.save(&self.settings_path);
         }
     }
 

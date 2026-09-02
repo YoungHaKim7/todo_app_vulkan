@@ -9,7 +9,7 @@
 //! - [`atlas`]    — glyph atlas packing and metrics (static bands + on-demand glyphs)
 //! - [`input`]    — text input field: caret, selection, and editing operations
 //! - [`todos`]    — ToDo model and persistence
-//! - [`settings`] — app settings (font size) and persistence
+//! - [`settings`] — app settings (font size, window size) and persistence
 //! - [`shaders`]  — SPIR-V shader modules
 
 mod app;

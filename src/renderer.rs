@@ -19,8 +19,8 @@ use vulkano::{
         },
     },
     device::{
-        Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo,
-        QueueFlags, physical::PhysicalDeviceType,
+        Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, DeviceOwned, Queue,
+        QueueCreateInfo, QueueFlags, physical::PhysicalDeviceType,
     },
     format::Format,
     image::{
@@ -66,6 +66,12 @@ use crate::{
 };
 
 const MAX_VERTICES: usize = 1 << 16;
+
+/// Window size in logical units for a fresh install; below the minimum the input row
+/// and controls stop fitting.
+pub(crate) const DEFAULT_WINDOW_SIZE: LogicalSize<u32> = LogicalSize::new(940, 640);
+/// Smallest window allowed, in logical units.
+pub(crate) const MIN_WINDOW_SIZE: LogicalSize<u32> = LogicalSize::new(560, 420);
 
 #[derive(BufferContents, Clone, Copy)]
 #[repr(C)]
@@ -284,14 +290,24 @@ pub(crate) struct RenderContext {
 }
 
 impl RenderContext {
-    pub(crate) fn new(gpu: &GpuContext, event_loop: &ActiveEventLoop) -> Self {
+    pub(crate) fn new(
+        gpu: &GpuContext,
+        event_loop: &ActiveEventLoop,
+        saved_size: Option<[u32; 2]>,
+    ) -> Self {
+        // Reopens at the size the last run left the window, clamped up to the minimum
+        // in case it predates a larger minimum; a first run (or a hand-edited
+        // settings file) falls back to the default.
+        let inner_size = saved_size.map_or(DEFAULT_WINDOW_SIZE, |[w, h]| {
+            LogicalSize::new(w.max(MIN_WINDOW_SIZE.width), h.max(MIN_WINDOW_SIZE.height))
+        });
         let window = Arc::new(
             event_loop
                 .create_window(
                     Window::default_attributes()
                         .with_title("Vulkan ToDo")
-                        .with_inner_size(LogicalSize::new(940.0, 640.0))
-                        .with_min_inner_size(LogicalSize::new(560.0, 420.0)),
+                        .with_inner_size(inner_size)
+                        .with_min_inner_size(MIN_WINDOW_SIZE),
                 )
                 .unwrap(),
         );
@@ -462,6 +478,33 @@ impl RenderContext {
         self.descriptor_set = make_descriptor_set(gpu, &self.pipeline, &self.atlas_view);
         self.previous_frame_end = Some(sync::now(gpu.device.clone()).boxed());
     }
+
+    /// Waits for the frame still in flight (if any) and resets the tracking future.
+    /// Paths that drop GPU resources the frame still uses — swapchain recreation
+    /// replacing the vertex buffers — must call this first.
+    fn wait_for_frame(&mut self) {
+        if let Some(previous) = self.previous_frame_end.take()
+            // `queue()` is `None` once the future is Cleaned (GPU done, resources
+            // released): nothing is in flight, and joining a cleaned future trips
+            // vulkano's `queue().is_some()` assertion in `then_signal_fence`.
+            && previous.queue().is_some()
+        {
+            // `wait` lives on `FenceSignalFuture`, not the `GpuFuture` trait, so the
+            // boxed future is joined into a fresh fence that transitively waits for it.
+            match sync::now(self.swapchain.device().clone())
+                .join(previous)
+                .then_signal_fence_and_flush()
+            {
+                Ok(fence) => {
+                    if let Err(e) = fence.wait(None) {
+                        println!("failed to wait for in-flight frame: {e}");
+                    }
+                }
+                Err(e) => println!("failed to flush in-flight frame: {e}"),
+            }
+        }
+        self.previous_frame_end = Some(sync::now(self.swapchain.device().clone()).boxed());
+    }
 }
 
 /// The sampler + atlas-image descriptor set bound by the UI pipeline.
@@ -524,7 +567,16 @@ impl App {
 
         rcx.previous_frame_end.as_mut().unwrap().cleanup_finished();
 
+        let mut dbg_recreated = false;  // TEMP-DEBUG
         if rcx.recreate_swapchain {
+            dbg_recreated = true;  // TEMP-DEBUG
+            // Wait for the in-flight frame before dropping the vertex buffers it
+            // reads: a freed subbuffer's memory returns to the allocator pool, and
+            // the replacement buffers allocated below can be handed that same
+            // memory while the GPU still reads it — the write then fails with
+            // `AccessConflict(DeviceRead)`. This is a resize path, not per-frame,
+            // so the wait is acceptable.
+            rcx.wait_for_frame();
             let (new_swapchain, new_images) = rcx
                 .swapchain
                 .recreate(&SwapchainCreateInfo {
@@ -580,8 +632,11 @@ impl App {
             match acquire_next_image(rcx.swapchain.clone(), None).map_err(Validated::unwrap) {
                 Ok(r) => r,
                 Err(VulkanError::OutOfDate) => {
+                    // Dropping the in-flight future here would forget its fence, so
+                    // the recreate above could no longer wait for that frame; flush
+                    // it first.
+                    rcx.wait_for_frame();
                     rcx.recreate_swapchain = true;
-                    rcx.previous_frame_end = Some(sync::now(self.gpu.device.clone()).boxed());
                     return;
                 }
                 Err(e) => panic!("failed to acquire next image: {e}"),
@@ -596,7 +651,17 @@ impl App {
         // what prevents `AccessConflict(DeviceRead)` when frames are still in flight.
         let vertex_buffer = rcx.vertex_buffers[image_index as usize].clone();
         {
-            let mut guard = vertex_buffer.write().unwrap();
+            let mut guard = match vertex_buffer.write() {  // TEMP-DEBUG
+                Ok(g) => g,
+                Err(e) => {
+                    eprintln!(
+                        "DBG write failed: {e:?} image_index={image_index} swapchain={:p} nbufs={} recreated={dbg_recreated} buf={:p}",
+                        rcx.swapchain, rcx.vertex_buffers.len(),
+                        std::sync::Arc::as_ptr(vertex_buffer.buffer()),
+                    );
+                    std::process::exit(2);
+                }
+            };
             guard[..ui.verts.len()].copy_from_slice(&ui.verts);
         }
 
@@ -663,6 +728,8 @@ impl App {
                 rcx.previous_frame_end = Some(future.boxed());
             }
             Err(VulkanError::OutOfDate) => {
+                eprintln!("DBG flush OutOfDate image_index={image_index} buf={:p}",  // TEMP-DEBUG
+                    std::sync::Arc::as_ptr(vertex_buffer.buffer()));
                 rcx.recreate_swapchain = true;
                 rcx.previous_frame_end = Some(sync::now(self.gpu.device.clone()).boxed());
             }

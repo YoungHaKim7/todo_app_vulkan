@@ -1,1 +1,2 @@
 font=4
+window=1674x895
