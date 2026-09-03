@@ -599,7 +599,7 @@ fn quit_layout(w: f32, h: f32, s: f32, title: Size, text: Size) -> (Rect, Rect, 
 }
 
 /// The Esc exit prompt: a dimmer over the main UI, then a small bordered panel asking
-/// "Are you really ending it? y / n" — a Y button confirms (latching `exit` for the
+/// "Are you sure you want to exit? y / n" — a Y button confirms (latching `exit` for the
 /// event loop) and an N button stays; the y and n keys answer the same way. Clicks
 /// were pre-filtered by the caller: only clicks inside `panel` reach this function.
 #[allow(clippy::too_many_arguments)]
