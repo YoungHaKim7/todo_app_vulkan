@@ -4,3 +4,4 @@
 1	0	test
 0	0	Test
 0	0	Test
+0	0	`NanumBarunGothic-YetHangul.ttf` 한글 더 크게 잘 나옴

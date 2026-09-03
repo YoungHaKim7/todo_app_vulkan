@@ -220,7 +220,7 @@ fn raster_slot<F: ab_glyph::Font>(scaled: &PxScaleFont<&F>, c: char) -> GlyphSlo
 /// Embedded fallback font for characters the UI font lacks, mainly Hangul. Instanced
 /// from the variable font at wght=400 (`fonttools varLib.instancer`); ab_glyph cannot
 /// apply gvar deltas, so the raw variable font would render its thin default weight.
-const FALLBACK_TTF: &[u8] = include_bytes!("../assets/font/NotoSerifKR-Regular.ttf");
+const FALLBACK_TTF: &[u8] = include_bytes!("../assets/font/NanumBarunGothic-YetHangul.ttf");
 
 /// The loaded fallback font, or `None` when no candidate exists or parses. The
 /// `TODO_KOREAN_FONT` environment variable overrides the bundled font; candidates
@@ -238,7 +238,7 @@ pub(crate) fn fallback() -> Option<&'static FontVec> {
             // Probe a Hangul syllable: coverage is what matters, not the name.
             .filter(|font| ab_glyph::Font::glyph_id(font, '가').0 != 0);
         if bundled.is_some() {
-            println!("Korean fallback font: bundled Noto Serif KR");
+            println!("Korean fallback font: bundled NanumBarunGothic-YetHangul KR");
         } else {
             println!("no Korean fallback font found; Hangul will render blank");
         }
